@@ -129,7 +129,7 @@ Each local engine exposes:
 
 ### Parakeet
 
-Cue recognizes the four required Parakeet assets: `encoder.int8.onnx`, `decoder.onnx`, `joiner.onnx`, and `tokens.txt`. Runtime resolution order is:
+Cue recognizes the four required Parakeet assets: `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt`. Runtime resolution order is:
 
 1. `CUE_PARAKEET_RUNTIME`, for development and explicit overrides.
 2. A Cue-bundled sherpa-onnx runtime.
