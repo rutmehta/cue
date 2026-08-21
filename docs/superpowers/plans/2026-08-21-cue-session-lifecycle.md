@@ -67,7 +67,7 @@ test('records interim/final source text and exact request model attribution', ()
 
 - [ ] **Step 2: Run the reducer tests and verify the missing-module failure**
 
-Run: `node --test test/session-state.test.js`  
+Run: `node --test test/session-state.test.js`
 Expected: FAIL with `Cannot find module '../src/session-state'`.
 
 - [ ] **Step 3: Implement the pure snapshot and transitions**
@@ -119,12 +119,12 @@ test('serializes commands and publishes full snapshots', async () => {
 });
 ```
 
-Run: `node --test test/session-state.test.js test/session-controller.test.js`  
+Run: `node --test test/session-state.test.js test/session-controller.test.js`
 Expected: PASS. The controller must use one internal transition promise so duplicate/concurrent commands join the in-flight operation instead of spawning capture twice.
 
 - [ ] **Step 5: Run the suite and commit**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: all existing and new tests pass.
 
 ```bash
@@ -195,10 +195,10 @@ Bounds defaults are `{ width: 720, height: 600 }`; minimums are `{ width: 420, h
 
 - [ ] **Step 4: Run focused and full tests**
 
-Run: `node --test test/window-state.test.js test/capture-protection.test.js`  
+Run: `node --test test/window-state.test.js test/capture-protection.test.js`
 Expected: PASS.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -264,10 +264,10 @@ The tray controller creates one `Tray`, updates its menu when session phase chan
 
 - [ ] **Step 4: Run focused and full tests**
 
-Run: `node --test test/lifecycle.test.js test/tray-menu.test.js`  
+Run: `node --test test/lifecycle.test.js test/tray-menu.test.js`
 Expected: PASS.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -338,12 +338,12 @@ On macOS, `window-all-closed` keeps the app alive. With a tray on Windows/Linux,
 
 Subscribe once on DOM ready, request the initial snapshot, and map session phases to the existing capture button. Wire the visible quit button to `cue.sessionCommand('quit')`. Remove hover-driven calls that toggle whole-window mouse ignore; use the existing passthrough control, if present, to call `windowCommand('lock')`, and make the hide control call `windowCommand('hide')`. The full visual rewrite remains in Plan 3.
 
-Run: `node --test test/ipc-contract.test.js test/main-lifecycle-source.test.js`  
+Run: `node --test test/ipc-contract.test.js test/main-lifecycle-source.test.js`
 Expected: PASS.
 
 - [ ] **Step 5: Run regression tests and commit**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS with no open timer/process handles.
 
 ```bash
@@ -363,25 +363,25 @@ git commit -m "feat: wire session lifecycle through main"
 
 - [ ] **Step 1: Run focused foundation coverage**
 
-Run: `node --test test/session-state.test.js test/session-controller.test.js test/window-state.test.js test/capture-protection.test.js test/lifecycle.test.js test/tray-menu.test.js test/ipc-contract.test.js test/main-lifecycle-source.test.js`  
+Run: `node --test test/session-state.test.js test/session-controller.test.js test/window-state.test.js test/capture-protection.test.js test/lifecycle.test.js test/tray-menu.test.js test/ipc-contract.test.js test/main-lifecycle-source.test.js`
 Expected: PASS.
 
 - [ ] **Step 2: Run the complete suite twice to expose leaked timers**
 
-Run: `npm test && npm test`  
+Run: `npm test && npm test`
 Expected: both runs pass and return to the shell.
 
 - [ ] **Step 3: Run static checks**
 
-Run: `git diff --check 90aa366..HEAD`  
+Run: `git diff --check 90aa366..HEAD`
 Expected: no whitespace errors.
 
-Run: `node --check main.js && node --check preload.js && node --check renderer/renderer.js`  
+Run: `node --check main.js && node --check preload.js && node --check renderer/renderer.js`
 Expected: no syntax errors.
 
 - [ ] **Step 4: Inspect repository scope**
 
-Run: `git status --short`  
+Run: `git status --short`
 Expected: the user-owned `package-lock.json` and the three audit extraction files may remain unstaged; no implementation file is untracked.
 
 - [ ] **Step 5: Commit verification fixes only when Step 1-4 required them**

@@ -92,12 +92,12 @@ test('keeps active settings unchanged when rename fails', async () => {
 
 Change `createLLM(settings, requestSelection = {})` to call `resolveModelSelection`; preserve the existing provider stream adapters and error mapping. Return `tier` beside `provider` and `model`. Update tests to assert the request override and configured tier reach each provider's stream arguments.
 
-Run: `node --test test/model-selection.test.js test/settings-service.test.js test/llm.test.js`  
+Run: `node --test test/model-selection.test.js test/settings-service.test.js test/llm.test.js`
 Expected: PASS.
 
 - [ ] **Step 5: Run the suite and commit**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 ```bash
@@ -196,10 +196,10 @@ The overflow menu contains Settings, Recenter, Unlock Interaction, Clear Context
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `node --test test/session-view.test.js test/overlay-accessibility.test.js`  
+Run: `node --test test/session-view.test.js test/overlay-accessibility.test.js`
 Expected: PASS.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 ```bash
@@ -271,10 +271,10 @@ Add preload `ask(payload)` validation for either `{ mode, text, selection }` or 
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `node --test test/overlay-controller.test.js test/response-attribution.test.js`  
+Run: `node --test test/overlay-controller.test.js test/response-attribution.test.js`
 Expected: PASS.
 
-Run: `npm test && node --check renderer/renderer.js && node --check main.js`  
+Run: `npm test && node --check renderer/renderer.js && node --check main.js`
 Expected: PASS.
 
 ```bash
@@ -349,10 +349,10 @@ Clone settings into a draft on load. All inputs update only the draft and dirty 
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `node --test test/model-catalog.test.js test/settings-window.test.js test/settings-accessibility.test.js`  
+Run: `node --test test/model-catalog.test.js test/settings-window.test.js test/settings-accessibility.test.js`
 Expected: PASS.
 
-Run: `npm test && node --check renderer/settings.js && node --check main.js`  
+Run: `npm test && node --check renderer/settings.js && node --check main.js`
 Expected: PASS.
 
 ```bash
@@ -378,15 +378,15 @@ Add deterministic tests for Tab order, Enter/Space activation, ArrowLeft/ArrowRi
 
 - [ ] **Step 2: Run automated and syntax verification**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
-Run: `node --check renderer/session-view.js && node --check renderer/overlay-controller.js && node --check renderer/renderer.js && node --check renderer/settings.js`  
+Run: `node --check renderer/session-view.js && node --check renderer/overlay-controller.js && node --check renderer/renderer.js && node --check renderer/settings.js`
 Expected: no syntax errors.
 
 - [ ] **Step 3: Launch the app and inspect all core states**
 
-Run: `npm start`  
+Run: `npm start`
 Expected: overlay opens on the current display with a broad draggable rail. Inspect idle, starting, listening with both sources, degraded mic-only/system-only, paused, streaming answer, failed answer with Retry, transcript tab, collapsed, explicit click-through/unlock, hidden/tray restore, settings, and quit. Confirm answer text remains readable over a bright and dark background and no control clips at 420 px width.
 
 - [ ] **Step 4: Inspect control-center persistence**

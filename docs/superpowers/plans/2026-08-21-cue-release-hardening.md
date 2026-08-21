@@ -87,12 +87,12 @@ Add a test where the checksum mismatch leaves the prior valid cache untouched an
 
 `prepare-local-runtimes.js` accepts `--platform`, `--arch`, `--output-root`, and `--parakeet-source`, prepares both runtimes, and prints their two paths as JSON. `verify-local-runtimes.js` validates both manifests, executables, dependencies, architectures, and notices and exits 1 with all problems listed together.
 
-Run: `node --test test/parakeet-runtime-manifest.test.js test/prepare-parakeet-runtime.test.js test/build-config.test.js`  
+Run: `node --test test/parakeet-runtime-manifest.test.js test/prepare-parakeet-runtime.test.js test/build-config.test.js`
 Expected: PASS.
 
 - [ ] **Step 5: Run the suite and commit**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 ```bash
@@ -164,12 +164,12 @@ The verifier checks product/bundle name, Info.plist usage strings, icon, main/pr
 
 Update the release workflow so upload runs only after `MAC_SIGN=1`, Developer ID material, Apple ID, app-specific password, team ID, runtime verification, signature verification, Gatekeeper assessment, and staple validation. Build x64 and arm64 separately from explicit validated runtime sources.
 
-Run: `node --test test/build-config.test.js test/packaged-app-verifier.test.js`  
+Run: `node --test test/build-config.test.js test/packaged-app-verifier.test.js`
 Expected: PASS.
 
 - [ ] **Step 5: Run the suite and commit**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 ```bash
@@ -239,10 +239,10 @@ The Node test spawns `node_modules/.bin/electron .` with that environment, captu
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `node --test test/capture-protection-self-test.test.js test/electron-smoke.test.js`  
+Run: `node --test test/capture-protection-self-test.test.js test/electron-smoke.test.js`
 Expected: PASS in the logged-in macOS desktop session.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 ```bash
@@ -298,12 +298,12 @@ Set `CURRENT_SCHEMA_VERSION = 2`. Migration adds exactly the new `localStt` and 
 
 Document install-from-source, runtime preparation, local `.app`, signed release, local model discovery, exact controls/shortcuts, source health, model selection, permission remediation, capture-protection outcomes/limitations, diagnostics, troubleshooting, and build verification. Remove contradictory macOS system-audio and runtime-inclusion sections plus vendor-style undetectability claims.
 
-Run: `node --test test/settings-migrations.test.js test/readme-claims.test.js test/build-config.test.js`  
+Run: `node --test test/settings-migrations.test.js test/readme-claims.test.js test/build-config.test.js`
 Expected: PASS.
 
 - [ ] **Step 5: Run the suite and commit**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 ```bash
@@ -323,29 +323,29 @@ git commit -m "docs: align Cue migration privacy and build guidance"
 
 - [ ] **Step 1: Establish the final automated baseline**
 
-Run: `npm test`  
+Run: `npm test`
 Expected: every test passes.
 
-Run: `node --test test/electron-smoke.test.js`  
+Run: `node --test test/electron-smoke.test.js`
 Expected: PASS.
 
 - [ ] **Step 2: Prepare and verify native runtimes**
 
-Run: `brew list cmake >/dev/null 2>&1 || brew install cmake`  
+Run: `brew list cmake >/dev/null 2>&1 || brew install cmake`
 Expected: CMake is available without modifying project files.
 
-Run: `npm run prepare:local -- --platform darwin --arch arm64 --parakeet-source /Applications/OpenWhispr.app/Contents/Resources/bin`  
+Run: `npm run prepare:local -- --platform darwin --arch arm64 --parakeet-source /Applications/OpenWhispr.app/Contents/Resources/bin`
 Expected: both project-local caches are prepared and validated.
 
-Run: `npm run verify:local -- --platform darwin --arch arm64`  
+Run: `npm run verify:local -- --platform darwin --arch arm64`
 Expected: PASS with whisper-server arm64 and sherpa-onnx-ws arm64/universal.
 
 - [ ] **Step 3: Build the local application and archive**
 
-Run: `npm run pack:mac`  
+Run: `npm run pack:mac`
 Expected: absolute `dist/mac-arm64/Cue.app` path printed and verifier PASS.
 
-Run: `npm run dist:mac`  
+Run: `npm run dist:mac`
 Expected: absolute `dist/Cue-<version>-mac-arm64-local.zip` path printed and verifier PASS.
 
 - [ ] **Step 4: Inspect and launch the artifact**
@@ -364,7 +364,7 @@ Expected: signature verification succeeds, both binaries include arm64, packaged
 
 - [ ] **Step 5: Commit verification fixes only when required**
 
-Run: `git diff --check 90aa366..HEAD && git status --short`  
+Run: `git diff --check 90aa366..HEAD && git status --short`
 Expected: no whitespace errors; only the user's pre-existing lockfile and audit extractions remain unstaged; `dist/` and runtime caches remain ignored.
 
 ```bash

@@ -116,10 +116,10 @@ On Darwin, accept OpenWhispr's `sherpa-onnx-ws-darwin-x64` only after its execut
 
 - [ ] **Step 4: Run focused and complete tests**
 
-Run: `node --test test/local-stt-engine.test.js test/parakeet-runtime.test.js`  
+Run: `node --test test/local-stt-engine.test.js test/parakeet-runtime.test.js`
 Expected: PASS.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -194,10 +194,10 @@ Treat stderr containing `Listening on:` as ready. The readiness timer is 15,000 
 
 - [ ] **Step 4: Run focused and complete tests**
 
-Run: `node --test test/parakeet-transcriber.test.js`  
+Run: `node --test test/parakeet-transcriber.test.js`
 Expected: PASS with the process exiting naturally.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -284,10 +284,10 @@ The whisper adapter uses per-request IDs to pair `onTranscript` callbacks with p
 
 - [ ] **Step 4: Run focused and complete tests**
 
-Run: `node --test test/local-stt-manager.test.js test/whisper-engine.test.js test/local-whisper-transcriber.test.js`  
+Run: `node --test test/local-stt-manager.test.js test/whisper-engine.test.js test/local-whisper-transcriber.test.js`
 Expected: PASS.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -342,10 +342,10 @@ Make `WhisperModelManager.listModels({ verify = false } = {})` retain its cheap 
 
 - [ ] **Step 4: Run focused and complete tests**
 
-Run: `node --test test/utterance-segmenter.test.js test/whisper-model-manager.test.js`  
+Run: `node --test test/utterance-segmenter.test.js test/whisper-model-manager.test.js`
 Expected: PASS.
 
-Run: `npm test`  
+Run: `npm test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -427,10 +427,10 @@ Keep existing cloud streaming/batch paths for explicit cloud providers. If local
 
 - [ ] **Step 5: Run verification and commit**
 
-Run: `node --test test/audio-utils.test.js test/audio-capture.test.js test/local-stt-integration.test.js`  
+Run: `node --test test/audio-utils.test.js test/audio-capture.test.js test/local-stt-integration.test.js`
 Expected: PASS.
 
-Run: `npm test && node --check main.js && node --check renderer/renderer.js`  
+Run: `npm test && node --check main.js && node --check renderer/renderer.js`
 Expected: PASS.
 
 ```bash
@@ -450,7 +450,7 @@ git commit -m "feat: make two-source local transcription reliable"
 
 - [ ] **Step 1: Run the complete automated suite twice**
 
-Run: `npm test && npm test`  
+Run: `npm test && npm test`
 Expected: both runs pass and no child process remains.
 
 - [ ] **Step 2: Run the Parakeet inspection command**
@@ -475,7 +475,7 @@ Use the model's bundled `test_wavs` first WAV if present. Start `ParakeetTranscr
 
 - [ ] **Step 4: Verify no leaked sidecar**
 
-Run: `pgrep -fl 'sherpa-onnx-(online-)?ws' || true`  
+Run: `pgrep -fl 'sherpa-onnx-(online-)?ws' || true`
 Expected: no Cue-started sidecar remains. An independently running OpenWhispr process must be identified by parent PID rather than killed.
 
 - [ ] **Step 5: Commit verification fixes only when required**

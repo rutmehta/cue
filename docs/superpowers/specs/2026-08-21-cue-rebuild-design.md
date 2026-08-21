@@ -1,7 +1,7 @@
 # Cue Rebuild Design
 
-**Date:** 2026-08-21  
-**Status:** Approved in chat  
+**Date:** 2026-08-21
+**Status:** Approved in chat
 **Scope:** Session lifecycle, local speech-to-text, overlay usability, model selection, control center, packaging, and verification
 
 ## Product intent
