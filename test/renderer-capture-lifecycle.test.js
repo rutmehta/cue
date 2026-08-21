@@ -2,7 +2,9 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  createAudioCaptureGraph,
   connectAudioWorklet,
+  connectScriptProcessor,
   createCaptureLifecycle,
   disconnectAudioGraph
 } = require('../renderer/capture-lifecycle');
@@ -53,6 +55,32 @@ test('stopping during acquisition disposes the late stream without activating it
   assert.equal(await starting, null);
   assert.equal(activated, false);
   assert.deepEqual(disposed, ['late-stream']);
+});
+
+test('stop followed immediately by start owns a fresh acquisition generation', async () => {
+  const acquisitions = [deferred(), deferred()];
+  const disposed = [];
+  let acquireCount = 0;
+  const lifecycle = createCaptureLifecycle({
+    acquire: () => acquisitions[acquireCount++].promise,
+    activate: async (resource) => ({ resource }),
+    disposeAcquired: (resource) => disposed.push(resource),
+    disposeActive() {}
+  });
+
+  const stale = lifecycle.start();
+  lifecycle.stop();
+  const fresh = lifecycle.start();
+  assert.notStrictEqual(fresh, stale);
+  assert.equal(acquireCount, 0);
+  await Promise.resolve();
+  assert.equal(acquireCount, 2);
+
+  acquisitions[0].resolve('stale-stream');
+  acquisitions[1].resolve('fresh-stream');
+  assert.equal(await stale, null);
+  assert.deepEqual(await fresh, { resource: 'fresh-stream' });
+  assert.deepEqual(disposed, ['stale-stream']);
 });
 
 test('stopping during activation disposes the late graph', async () => {
@@ -124,4 +152,71 @@ test('AudioWorklet graph retains a zero-gain destination sink and disconnects ev
   ]);
   disconnectAudioGraph(graph);
   assert.deepEqual(disconnections, ['worklet', 'source', 'sink']);
+});
+
+test('AudioWorklet graph construction rolls back every node and handler when connect throws', () => {
+  const disconnected = [];
+  const source = { connect() {}, disconnect: () => disconnected.push('source') };
+  const worklet = {
+    port: {},
+    connect() { throw new Error('worklet connect failed'); },
+    disconnect: () => disconnected.push('worklet')
+  };
+  const sink = { gain: {}, connect() {}, disconnect: () => disconnected.push('sink') };
+  const context = {
+    destination: {},
+    createMediaStreamSource: () => source,
+    createGain: () => sink
+  };
+
+  assert.throws(() => connectAudioWorklet({
+    audioContext: context,
+    mediaStream: {},
+    WorkletNode: function WorkletNode() { return worklet; },
+    onPcm() {}
+  }), /worklet connect failed/);
+  assert.equal(worklet.port.onmessage, null);
+  assert.deepEqual(disconnected.sort(), ['sink', 'source', 'worklet']);
+});
+
+test('ScriptProcessor graph construction is transactional', () => {
+  const disconnected = [];
+  const source = { connect() {}, disconnect: () => disconnected.push('source') };
+  const processor = {
+    connect() { throw new Error('processor connect failed'); },
+    disconnect: () => disconnected.push('processor')
+  };
+  const sink = { gain: {}, connect() {}, disconnect: () => disconnected.push('sink') };
+  const context = {
+    destination: {},
+    createMediaStreamSource: () => source,
+    createScriptProcessor: () => processor,
+    createGain: () => sink
+  };
+
+  assert.throws(() => connectScriptProcessor({ audioContext: context, mediaStream: {}, onPcm() {} }), /processor connect failed/);
+  assert.equal(processor.onaudioprocess, null);
+  assert.deepEqual(disconnected.sort(), ['processor', 'sink', 'source']);
+});
+
+test('terminal graph activation failure closes its AudioContext', async () => {
+  let closed = 0;
+  const context = {
+    audioWorklet: { addModule: async () => {} },
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createGain: () => ({ gain: {}, connect() {}, disconnect() {} }),
+    createScriptProcessor: () => { throw new Error('legacy graph failed'); },
+    close: async () => { closed += 1; }
+  };
+  function BrokenWorklet() {
+    return { port: {}, connect() { throw new Error('worklet graph failed'); }, disconnect() {} };
+  }
+
+  await assert.rejects(createAudioCaptureGraph({
+    audioContext: context,
+    mediaStream: {},
+    WorkletNode: BrokenWorklet,
+    onPcm() {}
+  }), /legacy graph failed/);
+  assert.equal(closed, 1);
 });

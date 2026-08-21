@@ -153,3 +153,49 @@ Results:
 ### Review concerns
 
 The deterministic renderer tests exercise capture ownership with deferred fake media resources rather than requesting real microphone/display permission. The capture-protection tests intentionally model Electron 33.2.1's real interface shape (`setContentProtection` with no nonexistent verification getter), but they do not claim OS-level exclusion. Hardware permission dialogs, Windows Task Manager presentation, and OS-specific screen-share exclusion still require release smoke testing on their target operating systems.
+
+## Review Round 2
+
+The scoped re-review of Round 1 found five remaining major boundary defects: untrusted renderer source updates, inexact batch/local STT attribution, a stop/restart capture-generation race with graph leaks, prompt metadata built from a different transcript window than the system prompt, and an early close interval before tray policy existed. Each defect received a deterministic regression before implementation.
+
+### Round 2 RED evidence
+
+1. **Authoritative source-update boundary and local callback generation.** `node --test test/source-update.test.js test/stt-status-gate.test.js` initially exited 1 with 0 passed and 2 failed because both new side-effect-free boundary modules were absent. The source probe includes foreign/destroyed sender rejection; inherited, extra, array, and empty shapes; invalid sources/phases; non-finite/out-of-range levels; and non-structured, extra-field, or over-limit errors. The reducer probe repeats malformed patches at the trusted internal boundary. The status gate probe demonstrates invalidation of a stopping local engine's callbacks.
+2. **Exact STT adapter/model result.** `node --test test/stt.test.js` initially reported 1 passed and 1 failed because `createSTT` accepted no adapter injection and returned no exact model. Its deterministic OpenAI-failure/Groq-success probe confirms the configured OpenAI model is attempted first while the successful result identifies Groq's actual hardcoded `whisper-large-v3-turbo` model.
+3. **Capture generation and transactional audio graphs.** `node --test test/renderer-capture-lifecycle.test.js` initially reported 5 passed and 4 failed. Stop followed immediately by restart reused the stale promise and performed only one acquisition; a throwing AudioWorklet connection retained handlers/nodes; the ScriptProcessor transaction helper was absent; and terminal dual-graph failure did not own and close the `AudioContext`.
+4. **One complete prompt plan.** `node --test test/prompts.test.js` initially reported 10 passed and 2 failed because `buildFeatureRequest` did not exist. The probes place a salary question just outside Say's 16-turn window and supply mixed null/undefined/false/blank/wrong-channel turns, proving that category-specific system material, user-prompt rendering, and `contextUsed` must share one bounded validated set.
+5. **Pre-coordinator close policy.** `node --test test/lifecycle.test.js test/main-lifecycle-source.test.js` initially reported 15 passed and 2 failed because no pre-coordinator decision helper existed and main did not route overlay close through it. The regression checks Windows/Linux default to Quit, macOS defaults to Hide, and an established coordinator remains authoritative.
+
+### Round 2 GREEN implementation
+
+- Added a side-effect-free source-update validator and sender guard. Main accepts reports only from the current live overlay `webContents`; payload and patch objects must be plain, exact, data-only shapes; source/phase are allowlisted; level is finite within `[0, 1]`; and error text/code are structured and bounded. The session reducer applies the same patch validator so trusted callers cannot inject fields or invalid values. Renderer error serialization clips to those limits before sending.
+- Batch STT no longer preclaims the first configured provider or a settings model. Every adapter attempt carries its real provider/model, a successful result returns both, and main dispatches them only after that success. Streaming-to-batch fallback clears the failed engine until the batch attempt succeeds. Local Whisper callbacks are generation-gated; normal stop and force-stop invalidate the generation and clear the active model before the transcriber's terminal `off` callback can restore stale metadata.
+- Renderer capture pending operations are generation-owned rather than globally reused. A stop invalidates the old promise, and an immediate restart starts a distinct acquisition while the late old resource is disposed. AudioWorklet and ScriptProcessor graph builders now roll back handlers and every created node on any connection failure. If neither graph activates, the helper closes its owned `AudioContext`; the renderer uses this single transactional path for both sources.
+- Prompt construction now filters to non-empty text turns from only `you`/`them`, trims and per-turn bounds text, applies one mode-specific bounded turn window (including a 200-turn recap bound), detects category from that same plan, and uses the plan for both system context and user text. `contextUsed` is derived only after both prompt components are finalized, so excluded or invalid source turns are not attributed.
+- Overlay close calls a pure policy helper even before lifecycle construction. A close in the tray-detection interval therefore quits on Windows/Linux instead of hiding an unreachable skip-taskbar window; macOS retains its hide/recovery convention, and the completed lifecycle/tray policy supersedes the default.
+
+### Round 2 verification
+
+Fresh final commands:
+
+```sh
+node --test test/source-update.test.js test/session-state.test.js test/stt-status-gate.test.js test/stt.test.js test/renderer-capture-lifecycle.test.js test/prompts.test.js test/lifecycle.test.js test/main-lifecycle-source.test.js
+npm test
+for cue_file in main.js renderer/renderer.js renderer/capture-lifecycle.js src/source-update.js src/session-state.js src/stt.js src/stt-status-gate.js src/prompts.js src/lifecycle.js; do node --check "$cue_file" || exit 1; done
+ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron --check main.js
+git diff --check -- . ':(exclude)package-lock.json'
+```
+
+Results:
+
+- Focused impacted tests: **54 passed, 0 failed**.
+- Full suite: **203 passed, 0 failed, 0 cancelled/skipped/todo**; ordinary `npm test` exited normally in 153 ms with no retained timer/process handles.
+- All Node syntax checks and Electron's Node-runtime `main.js` parse exited 0.
+- The tracked-change whitespace check produced no findings.
+- The pre-existing user-modified `package-lock.json` and untracked `index.cjs`, `index.js`, and `main-CLCIkAdW.js` remain unstaged and were not used by the fix.
+
+### Round 2 self-review and concerns
+
+Each reviewer line was rechecked against the final diff: source updates have both sender and value boundaries; batch/local STT cannot publish configured-but-unused or shutdown-stale metadata; immediate capture restart and every partial graph failure have explicit ownership cleanup; transcript category/system/user/attribution share one validated bounded plan; and every pre/post-coordinator close branch has a reachable recovery or quit path. The Node suite exits cleanly and no process-wide import side effects were added to the new pure helpers.
+
+As in Round 1, media tests use deterministic fake streams/nodes and do not exercise physical device permission UI. Exact STT metadata is adapter-tested without external network calls. Target-OS smoke testing remains necessary for Electron media graphs and the real tray-less startup/close interval.

@@ -4,6 +4,7 @@
 // then optionally the user's AI rules appended at the end.
 
 const { appendAiRules } = require('./profile-context');
+const { buildInterviewContext, detectCategory } = require('./interview-context');
 
 function formatTranscript(turns, limit) {
   const recent = limit ? turns.slice(-limit) : turns;
@@ -199,26 +200,73 @@ const TRANSCRIPT_LIMITS = Object.freeze({
   assist: 14,
   say: 16,
   followup: 20,
-  recap: 0,
+  recap: 200,
   ask: 12,
   answerThis: null,
   leetcode: null
 });
 
-function buildFeaturePrompt(mode, ctx, { screenIncluded = false } = {}) {
-  const definition = MODES[mode];
-  if (!definition) throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
-  const allTurns = Array.isArray(ctx.transcript) ? ctx.transcript : [];
+const MAX_TRANSCRIPT_TEXT_CHARS = 4_000;
+
+function createPromptPlan(mode, transcript) {
+  if (!Object.hasOwn(TRANSCRIPT_LIMITS, mode)) {
+    throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
+  }
+  const validTurns = (Array.isArray(transcript) ? transcript : [])
+    .filter((turn) => turn && (turn.channel === 'you' || turn.channel === 'them'))
+    .filter((turn) => typeof turn.text === 'string' && turn.text.trim())
+    .map((turn) => ({
+      channel: turn.channel,
+      text: turn.text.trim().slice(0, MAX_TRANSCRIPT_TEXT_CHARS)
+    }));
   const limit = TRANSCRIPT_LIMITS[mode];
-  const includedTurns = limit === null ? [] : limit === 0 ? allTurns : allTurns.slice(-limit);
+  const includedTurns = limit === null ? [] : validTurns.slice(-limit);
   return {
-    text: definition.build({ ...ctx, transcript: includedTurns }),
-    contextUsed: {
-      screen: Boolean(definition.needsScreen && screenIncluded),
-      mic: includedTurns.some((turn) => turn.channel === 'you'),
-      system: includedTurns.some((turn) => turn.channel === 'them')
-    }
+    transcript: includedTurns,
+    category: mode === 'leetcode' ? null : detectCategory(includedTurns)
   };
 }
 
-module.exports = { MODES, buildFeaturePrompt, formatTranscript };
+function contextUsedFor(definition, transcript, screenIncluded) {
+  return {
+    screen: Boolean(definition.needsScreen && screenIncluded),
+    mic: transcript.some((turn) => turn.channel === 'you'),
+    system: transcript.some((turn) => turn.channel === 'them')
+  };
+}
+
+function buildFeaturePrompt(mode, ctx, { screenIncluded = false } = {}) {
+  const definition = MODES[mode];
+  if (!definition) throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
+  const plan = createPromptPlan(mode, ctx.transcript);
+  return {
+    text: definition.build({ ...ctx, transcript: plan.transcript }),
+    contextUsed: contextUsedFor(definition, plan.transcript, screenIncluded)
+  };
+}
+
+function buildFeatureRequest(mode, ctx = {}) {
+  const definition = MODES[mode];
+  if (!definition) throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
+  const plan = ctx.plan || createPromptPlan(mode, ctx.transcript);
+  const settings = ctx.settings || {};
+  const contextBlock = buildInterviewContext(settings, mode, plan.transcript);
+  const system = definition.buildSystem
+    ? definition.buildSystem(contextBlock, settings.aiRules || '')
+    : (definition.system || '');
+  const text = definition.build({ ...ctx, transcript: plan.transcript });
+  return {
+    category: plan.category,
+    system,
+    text,
+    contextUsed: contextUsedFor(definition, plan.transcript, ctx.screenIncluded)
+  };
+}
+
+module.exports = {
+  MODES,
+  buildFeaturePrompt,
+  buildFeatureRequest,
+  createPromptPlan,
+  formatTranscript
+};

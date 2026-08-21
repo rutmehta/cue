@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MODES, buildFeaturePrompt } = require('../src/prompts');
+const { MODES, buildFeaturePrompt, buildFeatureRequest } = require('../src/prompts');
 
 test('assist mode gives a direct answer in first person', () => {
   const system = MODES.assist.buildSystem(null);
@@ -86,4 +86,40 @@ test('leetcode attributes only a successfully included screenshot', () => {
     buildFeaturePrompt('leetcode', { transcript, userText: '' }, { screenIncluded: false }).contextUsed,
     { screen: false, mic: false, system: false }
   );
+});
+
+test('one bounded transcript plan drives both category system context and user prompt attribution', () => {
+  const transcript = [
+    { channel: 'them', text: 'What are your salary expectations?' },
+    ...Array.from({ length: 16 }, (_value, index) => ({ channel: 'you', text: `recent answer ${index}` }))
+  ];
+  const request = buildFeatureRequest('say', {
+    transcript,
+    userText: '',
+    settings: { salaryTarget: '$180k-$200k' },
+    screenIncluded: false
+  });
+
+  assert.equal(request.system.includes('$180k-$200k'), false);
+  assert.equal(request.text.includes('salary expectations'), false);
+  assert.deepEqual(request.contextUsed, { screen: false, mic: true, system: false });
+});
+
+test('filters invalid and empty transcript values before rendering and attribution', () => {
+  const request = buildFeatureRequest('recap', {
+    transcript: [
+      { channel: 'them', text: null },
+      { channel: 'them', text: undefined },
+      { channel: 'them', text: false },
+      { channel: 'them', text: '   ' },
+      { channel: 'screen', text: 'injected' },
+      { channel: 'you', text: '  real answer  ' }
+    ],
+    settings: {},
+    screenIncluded: false
+  });
+
+  assert.match(request.text, /You: real answer/);
+  assert.doesNotMatch(request.text, /null|undefined|false|injected/);
+  assert.deepEqual(request.contextUsed, { screen: false, mic: true, system: false });
 });

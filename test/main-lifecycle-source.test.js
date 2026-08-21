@@ -70,6 +70,8 @@ test('renderer source lifecycle and main STT/settings/clear paths update the con
   assert.match(mainSource, /type: 'SETTINGS_UPDATED'/);
   assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
   assert.match(rendererSource, /cue\.sourceUpdate\(/);
+  assert.match(mainSource, /isOverlaySender\(event, win\)/);
+  assert.match(mainSource, /parseSourceUpdatePayload\(payload\)/);
 });
 
 test('renderer consumes one authoritative snapshot stream and explicit window commands', () => {

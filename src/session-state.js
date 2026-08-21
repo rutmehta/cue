@@ -3,6 +3,7 @@ const SESSION_PHASES = new Set(['idle', 'starting', 'listening', 'paused', 'stop
 const STT_PHASES = new Set(['off', 'probing', 'loading', 'ready', 'transcribing', 'fallback', 'error']);
 const SOURCES = new Set(['mic', 'system']);
 const SOURCE_LABELS = { mic: 'Microphone', system: 'System audio' };
+const { validateSourcePatch } = require('./source-update');
 const LIFECYCLE_TRANSITIONS = {
   SESSION_START_REQUESTED: { idle: 'start', error: 'start', starting: 'noop', listening: 'noop' },
   SESSION_PAUSED: { starting: 'pause', listening: 'pause', paused: 'noop' },
@@ -212,10 +213,7 @@ function reduceSttUpdated(snapshot, event) {
 
 function reduceSourceUpdated(snapshot, event) {
   assertSource(event.source);
-  const patch = event.patch || {};
-  if (patch.phase !== undefined && !SOURCE_PHASES.has(patch.phase)) {
-    throw new TypeError(`Invalid source phase: ${patch.phase}`);
-  }
+  const patch = validateSourcePatch(event.patch);
 
   const sources = {
     ...snapshot.sources,

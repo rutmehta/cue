@@ -83,7 +83,15 @@ function createLifecycleCoordinator(dependencies = {}) {
   };
 }
 
+function decideWindowClose(platform, coordinator) {
+  if (coordinator && typeof coordinator.closeDecision === 'function') {
+    return coordinator.closeDecision();
+  }
+  return platform === 'darwin' ? 'hide' : 'quit';
+}
+
 module.exports = {
   DEFAULT_QUIT_TIMEOUT_MS,
-  createLifecycleCoordinator
+  createLifecycleCoordinator,
+  decideWindowClose
 };

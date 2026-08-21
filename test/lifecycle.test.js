@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createLifecycleCoordinator } = require('../src/lifecycle');
+const { createLifecycleCoordinator, decideWindowClose } = require('../src/lifecycle');
 const { SessionController } = require('../src/session-controller');
 
 test('hide keeps capture running, end stops it, and quit cleans up once', async () => {
@@ -44,6 +44,13 @@ test('window close quits only when a non-macOS app has no tray recovery', () => 
   assert.equal(createLifecycleCoordinator({ platform: 'darwin', trayEnabled: false }).closeDecision(), 'hide');
   assert.equal(createLifecycleCoordinator({ platform: 'win32', trayEnabled: false }).closeDecision(), 'quit');
   assert.equal(createLifecycleCoordinator({ platform: 'linux', trayEnabled: false }).closeDecision(), 'quit');
+});
+
+test('pre-coordinator overlay close defaults to Quit off macOS', () => {
+  assert.equal(decideWindowClose('win32', null), 'quit');
+  assert.equal(decideWindowClose('linux', undefined), 'quit');
+  assert.equal(decideWindowClose('darwin', null), 'hide');
+  assert.equal(decideWindowClose('win32', { closeDecision: () => 'hide' }), 'hide');
 });
 
 test('routes each accepted command to its distinct injected action', async () => {

@@ -602,7 +602,7 @@
   }
 
   // ---- capture: mic + system audio (renderer side) ----------------------
-  const { connectAudioWorklet, createCaptureLifecycle, disconnectAudioGraph } = window.CaptureLifecycle;
+  const { createAudioCaptureGraph, createCaptureLifecycle, disconnectAudioGraph } = window.CaptureLifecycle;
   const stopTracks = (stream) => stream && stream.getTracks().forEach((track) => track.stop());
   function disconnectCapture(capture) {
     if (!capture) return;
@@ -615,37 +615,22 @@
     void capture.context.close();
     stopTracks(capture.stream);
   }
-  function legacyAudioGraph(context, stream, onPcm) {
-    const node = context.createMediaStreamSource(stream);
-    const proc = context.createScriptProcessor(4096, 1, 1);
-    const sink = context.createGain(); sink.gain.value = 0;
-    node.connect(proc); proc.connect(sink); sink.connect(context.destination);
-    proc.onaudioprocess = (event) => {
-      const input = event.inputBuffer.getChannelData(0);
-      const output = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        const sample = Math.max(-1, Math.min(1, input[i]));
-        output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-      }
-      onPcm(output.buffer);
-    };
-    return { _legacy: true, node, proc, sink };
-  }
   async function activateCapture(stream, onPcm, label) {
     const context = new AudioContext({ sampleRate: 16000 });
-    let graph;
-    try {
-      await context.audioWorklet.addModule('audio-worklet-processor.js');
-      graph = connectAudioWorklet({ audioContext: context, mediaStream: stream, WorkletNode: AudioWorkletNode, onPcm });
-      cue.log(label + ' AudioWorklet processor attached');
-    } catch (workletError) {
-      cue.log(label + ' AudioWorklet failed, using ScriptProcessor: ' + workletError.message);
-      graph = legacyAudioGraph(context, stream, onPcm);
-    }
+    const graph = await createAudioCaptureGraph({
+      audioContext: context,
+      mediaStream: stream,
+      WorkletNode: AudioWorkletNode,
+      onPcm,
+      onWorkletFallback: (error) => cue.log(label + ' AudioWorklet failed, using ScriptProcessor: ' + error.message)
+    });
+    if (!graph._legacy) cue.log(label + ' AudioWorklet processor attached');
     return { stream, context, graph };
   }
   function sourceError(error) {
-    return { code: error.code || error.name || 'capture_failed', message: error.message || String(error) };
+    const code = String(error.code || error.name || 'capture_failed').trim().slice(0, 64) || 'capture_failed';
+    const message = String(error.message || error).trim().slice(0, 500) || 'Capture failed.';
+    return { code, message };
   }
   function showMicError(error) {
     const name = error && error.name;
