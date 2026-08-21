@@ -39,11 +39,15 @@ class SessionController {
 
   start() {
     return this._runTransition(async () => {
-      if (this._snapshot.session.phase !== 'idle') {
+      if (this._snapshot.session.phase !== 'idle' && this._snapshot.session.phase !== 'error') {
         return this._snapshot;
       }
       this.dispatch({ type: 'SESSION_START_REQUESTED', now: this._now() });
-      await this._startCapture();
+      try {
+        await this._startCapture();
+      } catch (error) {
+        return this._captureFailed(error);
+      }
       return this._snapshot;
     });
   }
@@ -53,7 +57,11 @@ class SessionController {
       if (this._snapshot.session.phase !== 'starting' && this._snapshot.session.phase !== 'listening') {
         return this._snapshot;
       }
-      await this._stopCapture();
+      try {
+        await this._stopCapture();
+      } catch (error) {
+        return this._captureFailed(error);
+      }
       this.dispatch({ type: 'SESSION_PAUSED', now: this._now() });
       return this._snapshot;
     });
@@ -65,7 +73,11 @@ class SessionController {
         return this._snapshot;
       }
       this.dispatch({ type: 'SESSION_RESUMED', now: this._now() });
-      await this._startCapture();
+      try {
+        await this._startCapture();
+      } catch (error) {
+        return this._captureFailed(error);
+      }
       return this._snapshot;
     });
   }
@@ -76,7 +88,11 @@ class SessionController {
         return this._snapshot;
       }
       this.dispatch({ type: 'SESSION_STOP_REQUESTED', now: this._now() });
-      await this._stopCapture();
+      try {
+        await this._stopCapture();
+      } catch (error) {
+        return this._captureFailed(error);
+      }
       this.dispatch({ type: 'SESSION_STOPPED', now: this._now() });
       return this._snapshot;
     });
@@ -107,6 +123,14 @@ class SessionController {
     for (const listener of this._listeners) {
       listener(this._snapshot);
     }
+  }
+
+  _captureFailed(error) {
+    return this.dispatch({
+      type: 'SESSION_CAPTURE_FAILED',
+      now: this._now(),
+      error: { code: 'capture_failed', message: error?.message || 'Capture operation failed' }
+    });
   }
 
   _assertActive() {

@@ -1,6 +1,16 @@
 const SOURCE_PHASES = new Set(['off', 'starting', 'live', 'recovering', 'error', 'unsupported']);
 const SESSION_PHASES = new Set(['idle', 'starting', 'listening', 'paused', 'stopping', 'error']);
+const STT_PHASES = new Set(['off', 'probing', 'loading', 'ready', 'transcribing', 'fallback', 'error']);
 const SOURCES = new Set(['mic', 'system']);
+const SOURCE_LABELS = { mic: 'Microphone', system: 'System audio' };
+const LIFECYCLE_TRANSITIONS = {
+  SESSION_START_REQUESTED: { idle: 'start', error: 'start', starting: 'noop', listening: 'noop' },
+  SESSION_PAUSED: { starting: 'pause', listening: 'pause', paused: 'noop' },
+  SESSION_RESUMED: { paused: 'resume', starting: 'noop', listening: 'noop' },
+  SESSION_STOP_REQUESTED: { idle: 'noop', starting: 'stop', listening: 'stop', paused: 'stop', stopping: 'noop', error: 'stop' },
+  SESSION_STOPPED: { idle: 'noop', stopping: 'stopped' },
+  SESSION_CAPTURE_FAILED: { starting: 'failed', listening: 'failed', paused: 'failed', stopping: 'failed', error: 'noop' }
+};
 
 function createInitialSnapshot({ now = Date.now(), settings = {} } = {}) {
   const provider = settings.provider || 'openai';
@@ -45,47 +55,16 @@ function reduceSession(snapshot, event) {
 
   switch (event.type) {
     case 'SESSION_START_REQUESTED':
-      return revise(snapshot, {
-        session: {
-          phase: 'starting',
-          startedAt: event.now,
-          elapsedMs: 0,
-          resumedAt: event.now,
-          degradedReason: null
-        }
-      });
     case 'SESSION_PAUSED':
-      return revise(snapshot, { session: pauseSession(snapshot.session, event.now) });
     case 'SESSION_RESUMED':
-      return revise(snapshot, {
-        session: {
-          ...snapshot.session,
-          phase: resumePhase(snapshot),
-          resumedAt: event.now
-        }
-      });
     case 'SESSION_STOP_REQUESTED':
-      return revise(snapshot, {
-        session: {
-          ...pauseSession(snapshot.session, event.now),
-          phase: 'stopping',
-          degradedReason: null
-        }
-      });
     case 'SESSION_STOPPED':
-      return revise(snapshot, {
-        session: {
-          ...snapshot.session,
-          phase: 'idle',
-          startedAt: null,
-          resumedAt: null,
-          degradedReason: null
-        }
-      });
+    case 'SESSION_CAPTURE_FAILED':
+      return reduceLifecycle(snapshot, event);
     case 'SOURCE_UPDATED':
       return reduceSourceUpdated(snapshot, event);
     case 'STT_UPDATED':
-      return revise(snapshot, { stt: { ...snapshot.stt, ...event.patch } });
+      return reduceSttUpdated(snapshot, event);
     case 'TRANSCRIPT_INTERIM':
       return reduceTranscript(snapshot, event, 'interim');
     case 'TRANSCRIPT_FINAL':
@@ -96,12 +75,12 @@ function reduceSession(snapshot, event) {
           ...snapshot.llm,
           provider: event.provider,
           activeModel: event.model,
-          phase: 'requesting',
+          phase: 'idle',
           error: null
         },
         request: {
           id: event.id,
-          phase: 'requesting',
+          phase: 'capturing-context',
           contextUsed: { ...event.contextUsed },
           error: null
         }
@@ -114,7 +93,7 @@ function reduceSession(snapshot, event) {
     case 'LLM_REQUEST_FINISHED':
       return revise(snapshot, {
         llm: { ...snapshot.llm, phase: 'idle', error: null },
-        request: { ...snapshot.request, id: event.id || snapshot.request.id, phase: 'finished', error: null }
+        request: { ...snapshot.request, id: event.id || snapshot.request.id, phase: 'complete', error: null }
       });
     case 'LLM_REQUEST_FAILED':
       return revise(snapshot, {
@@ -124,6 +103,79 @@ function reduceSession(snapshot, event) {
     default:
       throw new TypeError(`Unknown session event: ${event.type}`);
   }
+}
+
+function reduceLifecycle(snapshot, event) {
+  const action = LIFECYCLE_TRANSITIONS[event.type][snapshot.session.phase];
+  if (!action) {
+    throw new TypeError(`Cannot ${event.type} while session is ${snapshot.session.phase}`);
+  }
+  if (action === 'noop') {
+    return snapshot;
+  }
+
+  switch (action) {
+    case 'start':
+      return revise(snapshot, {
+        session: {
+          phase: 'starting',
+          startedAt: event.now,
+          elapsedMs: 0,
+          resumedAt: event.now,
+          degradedReason: null
+        }
+      });
+    case 'pause':
+      return revise(snapshot, { session: pauseSession(snapshot.session, event.now) });
+    case 'resume':
+      return revise(snapshot, {
+        session: {
+          ...snapshot.session,
+          phase: resumePhase(snapshot),
+          resumedAt: event.now
+        }
+      });
+    case 'stop':
+      return revise(snapshot, {
+        session: {
+          ...pauseSession(snapshot.session, event.now),
+          phase: 'stopping',
+          degradedReason: null
+        }
+      });
+    case 'stopped':
+      return revise(snapshot, {
+        session: {
+          ...snapshot.session,
+          phase: 'idle',
+          startedAt: null,
+          resumedAt: null,
+          degradedReason: null
+        },
+        sources: stopSources(snapshot.sources),
+        stt: stopStt(snapshot.stt)
+      });
+    case 'failed':
+      return revise(snapshot, {
+        session: {
+          ...snapshot.session,
+          phase: 'error',
+          resumedAt: null,
+          degradedReason: captureFailureMessage(event.error)
+        },
+        stt: { ...snapshot.stt, phase: 'error', detail: captureFailureMessage(event.error) }
+      });
+    default:
+      throw new TypeError(`Unknown lifecycle action: ${action}`);
+  }
+}
+
+function reduceSttUpdated(snapshot, event) {
+  const patch = event.patch || {};
+  if (patch.phase !== undefined && !STT_PHASES.has(patch.phase)) {
+    throw new TypeError(`Invalid STT phase: ${patch.phase}`);
+  }
+  return revise(snapshot, { stt: { ...snapshot.stt, ...patch } });
 }
 
 function reduceSourceUpdated(snapshot, event) {
@@ -166,12 +218,42 @@ function sessionForSourceUpdate(session, sources, phase) {
 }
 
 function firstSourceErrorMessage(sources) {
-  for (const source of Object.values(sources)) {
-    if (source.phase === 'error' && source.error?.message) {
-      return source.error.message;
+  for (const [sourceName, source] of Object.entries(sources)) {
+    if (source.phase === 'error') {
+      return source.error?.message || `${SOURCE_LABELS[sourceName]} failed`;
+    }
+    if (source.phase === 'unsupported') {
+      return `${SOURCE_LABELS[sourceName]} is unsupported`;
     }
   }
   return null;
+}
+
+function stopSources(sources) {
+  const mic = stopSource(sources.mic);
+  const system = stopSource(sources.system);
+  if (mic === sources.mic && system === sources.system) {
+    return sources;
+  }
+  return { mic, system };
+}
+
+function stopSource(source) {
+  if (source.phase === 'off' && source.level === 0 && source.error === null) {
+    return source;
+  }
+  return { ...source, phase: 'off', level: 0, error: null };
+}
+
+function stopStt(stt) {
+  if (stt.phase === 'off' && stt.activeEngine === null && stt.detail === null) {
+    return stt;
+  }
+  return { ...stt, phase: 'off', activeEngine: null, detail: null };
+}
+
+function captureFailureMessage(error) {
+  return error?.message || 'Capture operation failed';
 }
 
 function pauseSession(session, now) {
@@ -198,6 +280,7 @@ function revise(snapshot, changes) {
 module.exports = {
   SOURCE_PHASES,
   SESSION_PHASES,
+  STT_PHASES,
   createInitialSnapshot,
   reduceSession,
   deriveSessionPhase
