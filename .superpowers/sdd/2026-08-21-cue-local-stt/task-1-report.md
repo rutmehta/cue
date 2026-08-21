@@ -28,3 +28,11 @@
 - Supplied `healthy` values must be booleans; supplied `errors` values must be arrays whose entries carry string code, message, and action fields. Malformed input is rejected by normalization and therefore cannot be selected by `isHealthyInspection`.
 - RED verification: serialization and malformed-field matrix tests failed before the contract hardening.
 - Post-review verification: 13 focused tests and 241 full-suite tests pass.
+
+## Review Round 2
+
+- Replaced lossy JSON conversion for inspection-error details with recursive validation of JSON-safe primitives, dense arrays, and plain objects only.
+- Rejected functions, symbols, bigints, non-finite numbers, built-ins/non-plain prototypes, sparse or undefined array/object content, accessors, symbol keys, and cycles.
+- Preserved safe nested arrays and objects exactly across JSON and structured-clone round trips; existing Parakeet `missingFiles` details remain valid.
+- RED verification: the recursive unsafe-details matrix failed before strict validation was implemented.
+- Post-review verification: 15 focused tests and 243 full-suite tests pass.

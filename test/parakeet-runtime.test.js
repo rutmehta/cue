@@ -167,6 +167,8 @@ test('reports invalid runtime and incomplete model assets without throwing', asy
   assert.equal(result.healthy, false);
   assert.deepEqual(result.errors.map((error) => error.code), ['runtime_not_executable', 'model_incomplete']);
   assert.deepEqual(result.model.missingFiles, ['decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
+  assert.deepEqual(structuredClone(result), result);
 });
 
 test('builds sherpa server arguments in its required order', () => {

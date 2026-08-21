@@ -64,6 +64,62 @@ test('normalizes errors into IPC-safe records that survive JSON and structured c
   assert.deepEqual(structuredClone(inspection), inspection);
 });
 
+test('preserves safe nested error details exactly across IPC round trips', () => {
+  const details = {
+    model: {
+      required: ['encoder.int8.onnx', 'decoder.int8.onnx'],
+      missing: ['tokens.txt'],
+      metadata: { size: 640000000, verified: false, retry: null }
+    },
+    attempts: [{ source: 'settings', usable: false }, { source: 'openwhispr', usable: true }]
+  };
+  const inspection = normalizeEngineInspection({
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+    errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details }]
+  });
+  assert.deepEqual(inspection.errors[0].details, details);
+  assert.deepEqual(JSON.parse(JSON.stringify(inspection)), inspection);
+  assert.deepEqual(structuredClone(inspection), inspection);
+});
+
+test('rejects recursively unsafe error details instead of silently converting them', () => {
+  const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
+  const sparse = [];
+  sparse[1] = 'value';
+  const cycle = { name: 'cycle' };
+  cycle.self = cycle;
+  const customPrototype = Object.create({ inherited: true });
+  customPrototype.value = 'not plain';
+  const unsafeDetails = [
+    ['function', () => {}],
+    ['symbol', Symbol('detail')],
+    ['bigint', 1n],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['negative infinity', -Infinity],
+    ['Error', new Error('bad')],
+    ['Date', new Date('2026-08-21T00:00:00.000Z')],
+    ['Map', new Map([['key', 'value']])],
+    ['Set', new Set(['value'])],
+    ['non-plain prototype', customPrototype],
+    ['sparse array', sparse],
+    ['direct undefined', undefined],
+    ['array undefined', [undefined]],
+    ['undefined', { nested: undefined }],
+    ['cycle', cycle]
+  ];
+
+  for (const [name, details] of unsafeDetails) {
+    const value = {
+      ...assets,
+      errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details }]
+    };
+    assert.throws(() => normalizeEngineInspection(value), /details.*plain/i, name);
+    assert.equal(isHealthyInspection(value), false, name);
+  }
+});
+
 test('rejects malformed healthy and errors fields instead of coercing them', () => {
   const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
   for (const healthy of [undefined, null, 'false', 0, 1, {}, []]) {

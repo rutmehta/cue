@@ -32,13 +32,48 @@ function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function normalizeErrorDetails(details) {
+function invalidErrorDetails() {
+  throw new TypeError('Inspection error details must contain only JSON-safe plain data.');
+}
+
+function isArrayIndex(key, length) {
+  const index = Number(key);
+  return Number.isInteger(index) && index >= 0 && index < length && String(index) === key;
+}
+
+function validateErrorDetails(value, ancestors = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) invalidErrorDetails();
+    return;
+  }
+  if (typeof value !== 'object' || ancestors.has(value)) invalidErrorDetails();
+
+  ancestors.add(value);
   try {
-    const json = JSON.stringify(details);
-    if (json === undefined) throw new TypeError('not JSON serializable');
-    return JSON.parse(json);
-  } catch {
-    throw new TypeError('Inspection error details must be JSON-serializable.');
+    if (Array.isArray(value)) {
+      for (const key of Reflect.ownKeys(value)) {
+        if (key === 'length') continue;
+        if (typeof key !== 'string' || !isArrayIndex(key, value.length)) invalidErrorDetails();
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !hasOwn(descriptor, 'value')) invalidErrorDetails();
+      }
+      for (let index = 0; index < value.length; index += 1) {
+        if (!hasOwn(value, index)) invalidErrorDetails();
+        validateErrorDetails(value[index], ancestors);
+      }
+      return;
+    }
+
+    if (Object.getPrototypeOf(value) !== Object.prototype) invalidErrorDetails();
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') invalidErrorDetails();
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) invalidErrorDetails();
+      validateErrorDetails(descriptor.value, ancestors);
+    }
+  } finally {
+    ancestors.delete(value);
   }
 }
 
@@ -50,8 +85,9 @@ function normalizeInspectionError(error) {
     throw new TypeError('Each inspection error requires string code, message, and action fields.');
   }
   const normalized = { code: error.code, message: error.message, action: error.action };
-  if (hasOwn(error, 'details') && error.details !== undefined) {
-    normalized.details = normalizeErrorDetails(error.details);
+  if (hasOwn(error, 'details')) {
+    validateErrorDetails(error.details);
+    normalized.details = error.details;
   }
   return normalized;
 }
