@@ -41,6 +41,63 @@ test('LocalSttError carries a stable code and action', () => {
   });
 });
 
+test('normalizes errors into IPC-safe records that survive JSON and structured cloning', () => {
+  const inspection = normalizeEngineInspection({
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+    errors: [new LocalSttError(
+      'model_incomplete',
+      'The Parakeet model is incomplete.',
+      'Download the missing files.',
+      { missingFiles: ['tokens.txt'] }
+    )]
+  });
+  const expectedError = {
+    code: 'model_incomplete',
+    message: 'The Parakeet model is incomplete.',
+    action: 'Download the missing files.',
+    details: { missingFiles: ['tokens.txt'] }
+  };
+  assert.equal(inspection.errors[0] instanceof LocalSttError, false);
+  assert.deepEqual(inspection.errors, [expectedError]);
+  assert.deepEqual(JSON.parse(JSON.stringify(inspection)), inspection);
+  assert.deepEqual(structuredClone(inspection), inspection);
+});
+
+test('rejects malformed healthy and errors fields instead of coercing them', () => {
+  const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
+  for (const healthy of [undefined, null, 'false', 0, 1, {}, []]) {
+    assert.throws(
+      () => normalizeEngineInspection({ ...assets, healthy }),
+      /healthy.*boolean/i,
+      `healthy=${String(healthy)}`
+    );
+  }
+  for (const errors of [undefined, null, {}, 'not an array', new LocalSttError('x', 'x', 'x')]) {
+    assert.throws(
+      () => normalizeEngineInspection({ ...assets, errors }),
+      /errors.*array/i,
+      `errors=${String(errors)}`
+    );
+  }
+  for (const error of [
+    null,
+    'missing',
+    {},
+    { code: 'runtime_missing', action: 'Install it.' },
+    { code: 'runtime_missing', message: 'Missing.' },
+    { message: 'Missing.', action: 'Install it.' },
+    { code: 5, message: 'Missing.', action: 'Install it.' }
+  ]) {
+    assert.throws(
+      () => normalizeEngineInspection({ ...assets, healthy: false, errors: [error] }),
+      /error.*code.*message.*action/i
+    );
+  }
+  assert.equal(isHealthyInspection({ ...assets, healthy: 'false', errors: [] }), false);
+  assert.equal(isHealthyInspection({ ...assets, healthy: true, errors: {} }), false);
+});
+
 test('health requires both assets and no structured errors', () => {
   assert.equal(isHealthyInspection({
     id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' }

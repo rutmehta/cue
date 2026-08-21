@@ -20,3 +20,11 @@
 - Changes are limited to Task 1's source, test, and report files.
 - Discovery performs only filesystem metadata/access reads; it does not write, copy, or modify OpenWhispr assets.
 - No remaining implementation concerns identified for this task.
+
+## Review Round 1
+
+- Normalized `LocalSttError` instances and compatible error objects into plain, IPC-safe `{ code, message, action, details? }` records at the inspection boundary.
+- Error details are JSON-normalized so the inspection result also survives Electron-style structured cloning.
+- Supplied `healthy` values must be booleans; supplied `errors` values must be arrays whose entries carry string code, message, and action fields. Malformed input is rejected by normalization and therefore cannot be selected by `isHealthyInspection`.
+- RED verification: serialization and malformed-field matrix tests failed before the contract hardening.
+- Post-review verification: 13 focused tests and 241 full-suite tests pass.

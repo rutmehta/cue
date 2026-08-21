@@ -28,6 +28,34 @@ function normalizeModel(model) {
   };
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeErrorDetails(details) {
+  try {
+    const json = JSON.stringify(details);
+    if (json === undefined) throw new TypeError('not JSON serializable');
+    return JSON.parse(json);
+  } catch {
+    throw new TypeError('Inspection error details must be JSON-serializable.');
+  }
+}
+
+function normalizeInspectionError(error) {
+  if (!error || typeof error !== 'object' ||
+    typeof error.code !== 'string' || !error.code ||
+    typeof error.message !== 'string' ||
+    typeof error.action !== 'string') {
+    throw new TypeError('Each inspection error requires string code, message, and action fields.');
+  }
+  const normalized = { code: error.code, message: error.message, action: error.action };
+  if (hasOwn(error, 'details') && error.details !== undefined) {
+    normalized.details = normalizeErrorDetails(error.details);
+  }
+  return normalized;
+}
+
 function normalizeEngineInspection(value) {
   if (!value || typeof value !== 'object') {
     throw new TypeError('Engine inspection must be an object.');
@@ -38,9 +66,15 @@ function normalizeEngineInspection(value) {
 
   const runtime = normalizeRuntime(value.runtime);
   const model = normalizeModel(value.model);
-  const errors = Array.isArray(value.errors) ? value.errors : [];
+  if (hasOwn(value, 'errors') && !Array.isArray(value.errors)) {
+    throw new TypeError('Engine inspection errors must be an array.');
+  }
+  const errors = (value.errors || []).map(normalizeInspectionError);
   const inferredHealthy = Boolean(runtime && runtime.path && model && model.path && errors.length === 0);
-  const healthy = value.healthy === undefined ? inferredHealthy : Boolean(value.healthy);
+  if (hasOwn(value, 'healthy') && typeof value.healthy !== 'boolean') {
+    throw new TypeError('Engine inspection healthy must be a boolean.');
+  }
+  const healthy = hasOwn(value, 'healthy') ? value.healthy : inferredHealthy;
 
   if (healthy && (!runtime || !runtime.path || !model || !model.path)) {
     throw new TypeError('A healthy engine inspection requires runtime and model paths.');
