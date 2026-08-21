@@ -66,3 +66,37 @@ Results:
 ## Concerns
 
 None. Post-stop cleanup is deliberately invoked without awaiting arbitrary promises so a hung cancellation cannot prevent destruction and exit; this is covered by a deterministic test.
+
+## Review round 1: tray failure handling
+
+### RED evidence
+
+Command:
+
+```sh
+node --test test/tray-menu.test.js
+```
+
+Result before the hardening changes: 5 passed, 2 failed.
+
+- The strict child-process regression invoked a rejecting menu command and double-click command under `--unhandled-rejections=strict`. It exited 1 with `Error: command rejected`, proving Electron-style discarded callback promises were unhandled.
+- The unsubscribe regression showed `controller.destroy()` threw `unsubscribe failed` and did not reach `tray.destroy()`.
+
+### GREEN evidence
+
+Commands:
+
+```sh
+node --test test/lifecycle.test.js test/tray-menu.test.js
+npm test
+```
+
+Results after the fix:
+
+- Focused Task 3 tests: 14 passed, 0 failed.
+- Full suite: 164 passed, 0 failed.
+
+### Change evidence
+
+- `dispatch()` now catches synchronous command throws and consumes promise rejections before Electron can discard them.
+- `destroy()` now consumes a promise-returning unsubscriber's rejection, guards synchronous unsubscription failure, and calls `tray.destroy()` from `finally` exactly once.

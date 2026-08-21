@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 const test = require('node:test');
 
 const { buildTrayTemplate, createTrayController } = require('../src/tray-menu');
@@ -101,4 +103,48 @@ test('tray controller installs a recovery menu even before its first snapshot ar
 
   assert.equal(menus.length, 1);
   assert.equal(menus[0][0].label, 'Show Cue');
+});
+
+test('tray callbacks consume rejected lifecycle commands under strict unhandled-rejection handling', () => {
+  const modulePath = path.join(__dirname, '..', 'src', 'tray-menu.js');
+  const script = `
+    const { createTrayController } = require(${JSON.stringify(modulePath)});
+    let menu;
+    let doubleClick;
+    createTrayController({
+      Tray: class {
+        setContextMenu(nextMenu) { menu = nextMenu; }
+        on(event, handler) { if (event === 'double-click') doubleClick = handler; }
+      },
+      Menu: { buildFromTemplate: (template) => template },
+      icon: 'cue-icon',
+      command: () => Promise.reject(new Error('command rejected')),
+      getSnapshot: () => ({ session: { phase: 'idle' } })
+    });
+    menu[0].click();
+    doubleClick();
+    setImmediate(() => process.exit(0));
+  `;
+  const result = spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', script]);
+
+  assert.equal(result.status, 0, result.stderr.toString());
+});
+
+test('tray destruction still runs once when unsubscription throws', () => {
+  let destroyed = 0;
+  const controller = createTrayController({
+    Tray: class {
+      setContextMenu() {}
+      on() {}
+      destroy() { destroyed += 1; }
+    },
+    Menu: { buildFromTemplate: (template) => template },
+    icon: 'cue-icon',
+    command: () => {},
+    subscribe: () => () => { throw new Error('unsubscribe failed'); }
+  });
+
+  assert.doesNotThrow(() => controller.destroy());
+  controller.destroy();
+  assert.equal(destroyed, 1);
 });

@@ -52,7 +52,11 @@ function createTrayController(dependencies = {}) {
   let unsubscribe = noOp;
 
   function dispatch(name) {
-    return command(name);
+    try {
+      return Promise.resolve(command(name)).catch(noOp);
+    } catch {
+      return Promise.resolve();
+    }
   }
 
   function update(snapshot = getSnapshot()) {
@@ -90,8 +94,13 @@ function createTrayController(dependencies = {}) {
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      unsubscribe();
-      if (typeof tray.destroy === 'function') tray.destroy();
+      try {
+        Promise.resolve(unsubscribe()).catch(noOp);
+      } catch {
+        // Destroying the tray remains mandatory when subscriber cleanup fails.
+      } finally {
+        if (typeof tray.destroy === 'function') tray.destroy();
+      }
     }
   };
 }
