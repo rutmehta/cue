@@ -36,3 +36,12 @@
 - Preserved safe nested arrays and objects exactly across JSON and structured-clone round trips; existing Parakeet `missingFiles` details remain valid.
 - RED verification: the recursive unsafe-details matrix failed before strict validation was implemented.
 - Post-review verification: 15 focused tests and 243 full-suite tests pass.
+
+## Review Round 3
+
+- Replaced validation-by-reference with a bounded descriptor-based copy for error details and the errors list. Accepted outputs contain fresh standard arrays/plain objects only.
+- Rejected array subclasses and altered prototypes, sparse arrays, negative zero, reserved prototype-pollution keys, accessors, and unsafe proxies; error fields are read only from own data descriptors.
+- Added controlled depth, node, array-length, object-key, and error-count bounds so oversized details fail with `TypeError` before recursion can overflow.
+- Added regression coverage for no input mutation, proxy/getter safety, exact JSON/structured-clone round trips, actual Parakeet `missingFiles` details, and all prior unsafe cases.
+- RED verification: clone-safety regressions failed before the bounded normalized copy was implemented.
+- Post-review verification: 19 focused tests and 247 full-suite tests pass.

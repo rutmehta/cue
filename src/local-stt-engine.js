@@ -32,8 +32,27 @@ function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+const MAX_DETAIL_DEPTH = 32;
+const MAX_DETAIL_NODES = 1000;
+const MAX_DETAIL_ARRAY_LENGTH = 256;
+const MAX_DETAIL_OBJECT_KEYS = 256;
+const MAX_INSPECTION_ERRORS = 64;
+const RESERVED_DETAIL_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function invalidErrorDetails() {
   throw new TypeError('Inspection error details must contain only JSON-safe plain data.');
+}
+
+function detailLimitExceeded() {
+  throw new TypeError('Inspection error details exceed safe limits.');
+}
+
+function invalidInspectionErrors() {
+  throw new TypeError('Engine inspection errors must be a dense standard array.');
+}
+
+function invalidInspectionErrorFields() {
+  throw new TypeError('Each inspection error requires own data fields for code, message, and action.');
 }
 
 function isArrayIndex(key, length) {
@@ -41,55 +60,100 @@ function isArrayIndex(key, length) {
   return Number.isInteger(index) && index >= 0 && index < length && String(index) === key;
 }
 
-function validateErrorDetails(value, ancestors = new Set()) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) invalidErrorDetails();
-    return;
-  }
-  if (typeof value !== 'object' || ancestors.has(value)) invalidErrorDetails();
+function ownDataProperty(value, key, invalid) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !hasOwn(descriptor, 'value')) invalid();
+  return descriptor.value;
+}
 
-  ancestors.add(value);
+function arrayLength(value, invalid) {
+  const length = ownDataProperty(value, 'length', invalid);
+  if (!Number.isSafeInteger(length) || length < 0) invalid();
+  return length;
+}
+
+function cloneErrorDetails(value, state = { nodes: 0, ancestors: new Set() }, depth = 0) {
+  if (depth > MAX_DETAIL_DEPTH) detailLimitExceeded();
+  state.nodes += 1;
+  if (state.nodes > MAX_DETAIL_NODES) detailLimitExceeded();
+
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Object.is(value, -0)) invalidErrorDetails();
+    return value;
+  }
+  if (typeof value !== 'object' || state.ancestors.has(value)) invalidErrorDetails();
+
+  state.ancestors.add(value);
   try {
     if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) invalidErrorDetails();
+      const length = arrayLength(value, invalidErrorDetails);
+      if (length > MAX_DETAIL_ARRAY_LENGTH) detailLimitExceeded();
       for (const key of Reflect.ownKeys(value)) {
         if (key === 'length') continue;
-        if (typeof key !== 'string' || !isArrayIndex(key, value.length)) invalidErrorDetails();
+        if (typeof key !== 'string' || !isArrayIndex(key, length)) invalidErrorDetails();
         const descriptor = Object.getOwnPropertyDescriptor(value, key);
         if (!descriptor || !hasOwn(descriptor, 'value')) invalidErrorDetails();
       }
-      for (let index = 0; index < value.length; index += 1) {
-        if (!hasOwn(value, index)) invalidErrorDetails();
-        validateErrorDetails(value[index], ancestors);
+      const clone = [];
+      for (let index = 0; index < length; index += 1) {
+        const element = ownDataProperty(value, String(index), invalidErrorDetails);
+        clone.push(cloneErrorDetails(element, state, depth + 1));
       }
-      return;
+      return clone;
     }
 
     if (Object.getPrototypeOf(value) !== Object.prototype) invalidErrorDetails();
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string') invalidErrorDetails();
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > MAX_DETAIL_OBJECT_KEYS) detailLimitExceeded();
+    const clone = {};
+    for (const key of keys) {
+      if (typeof key !== 'string' || RESERVED_DETAIL_KEYS.has(key)) invalidErrorDetails();
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) invalidErrorDetails();
-      validateErrorDetails(descriptor.value, ancestors);
+      clone[key] = cloneErrorDetails(descriptor.value, state, depth + 1);
     }
+    return clone;
   } finally {
-    ancestors.delete(value);
+    state.ancestors.delete(value);
   }
 }
 
 function normalizeInspectionError(error) {
-  if (!error || typeof error !== 'object' ||
-    typeof error.code !== 'string' || !error.code ||
-    typeof error.message !== 'string' ||
-    typeof error.action !== 'string') {
+  if (!error || typeof error !== 'object') invalidInspectionErrorFields();
+  const code = ownDataProperty(error, 'code', invalidInspectionErrorFields);
+  const message = ownDataProperty(error, 'message', invalidInspectionErrorFields);
+  const action = ownDataProperty(error, 'action', invalidInspectionErrorFields);
+  if (typeof code !== 'string' || !code || typeof message !== 'string' || typeof action !== 'string') {
     throw new TypeError('Each inspection error requires string code, message, and action fields.');
   }
-  const normalized = { code: error.code, message: error.message, action: error.action };
-  if (hasOwn(error, 'details')) {
-    validateErrorDetails(error.details);
-    normalized.details = error.details;
+  const normalized = { code, message, action };
+  const details = Object.getOwnPropertyDescriptor(error, 'details');
+  if (details) {
+    if (!hasOwn(details, 'value')) invalidInspectionErrorFields();
+    normalized.details = cloneErrorDetails(details.value);
   }
   return normalized;
+}
+
+function normalizeInspectionErrors(value) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    invalidInspectionErrors();
+  }
+  const length = arrayLength(value, invalidInspectionErrors);
+  if (length > MAX_INSPECTION_ERRORS) invalidInspectionErrors();
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === 'length') continue;
+    if (typeof key !== 'string' || !isArrayIndex(key, length)) invalidInspectionErrors();
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !hasOwn(descriptor, 'value')) invalidInspectionErrors();
+  }
+  const errors = [];
+  for (let index = 0; index < length; index += 1) {
+    errors.push(normalizeInspectionError(ownDataProperty(value, String(index), invalidInspectionErrors)));
+  }
+  return errors;
 }
 
 function normalizeEngineInspection(value) {
@@ -102,10 +166,14 @@ function normalizeEngineInspection(value) {
 
   const runtime = normalizeRuntime(value.runtime);
   const model = normalizeModel(value.model);
-  if (hasOwn(value, 'errors') && !Array.isArray(value.errors)) {
+  const errorList = Object.getOwnPropertyDescriptor(value, 'errors');
+  if (errorList && !hasOwn(errorList, 'value')) {
     throw new TypeError('Engine inspection errors must be an array.');
   }
-  const errors = (value.errors || []).map(normalizeInspectionError);
+  if (errorList && !Array.isArray(errorList.value)) {
+    throw new TypeError('Engine inspection errors must be an array.');
+  }
+  const errors = errorList ? normalizeInspectionErrors(errorList.value) : [];
   const inferredHealthy = Boolean(runtime && runtime.path && model && model.path && errors.length === 0);
   if (hasOwn(value, 'healthy') && typeof value.healthy !== 'boolean') {
     throw new TypeError('Engine inspection healthy must be a boolean.');

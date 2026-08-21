@@ -120,6 +120,103 @@ test('rejects recursively unsafe error details instead of silently converting th
   }
 });
 
+test('copies accepted details without retaining proxies or mutating input', () => {
+  const source = { nested: { value: 'original' }, files: ['tokens.txt'] };
+  const proxyDetails = new Proxy(source, {
+    get() { throw new Error('detail getter must not run'); }
+  });
+  const proxyError = new Proxy({
+    code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: proxyDetails
+  }, {
+    get() { throw new Error('error getter must not run'); }
+  });
+  const inspection = normalizeEngineInspection({
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/p' }, model: { path: '/models/p' }, errors: [proxyError]
+  });
+  const details = inspection.errors[0].details;
+  assert.notStrictEqual(details, proxyDetails);
+  assert.notStrictEqual(details.nested, source.nested);
+  assert.notStrictEqual(details.files, source.files);
+  details.nested.value = 'changed';
+  details.files.push('encoder.int8.onnx');
+  assert.deepEqual(source, { nested: { value: 'original' }, files: ['tokens.txt'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(inspection)), inspection);
+  assert.deepEqual(structuredClone(inspection), inspection);
+});
+
+test('rejects nonstandard detail/error arrays and lossy detail values', () => {
+  const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
+  const error = { code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.' };
+  class DetailArray extends Array {}
+  class ErrorArray extends Array {}
+  const nullPrototypeArray = ['value'];
+  Object.setPrototypeOf(nullPrototypeArray, null);
+  const sparseErrors = [];
+  sparseErrors[1] = error;
+  for (const details of [new DetailArray('value'), nullPrototypeArray, -0]) {
+    assert.throws(
+      () => normalizeEngineInspection({ ...assets, errors: [{ ...error, details }] }),
+      /details.*plain/i
+    );
+  }
+  for (const errors of [new ErrorArray(error), sparseErrors]) {
+    assert.throws(() => normalizeEngineInspection({ ...assets, errors }), /errors.*array/i);
+    assert.equal(isHealthyInspection({ ...assets, errors }), false);
+  }
+});
+
+test('rejects reserved detail keys and accessors without invoking getters', () => {
+  const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const details = JSON.parse(`{"${key}":"unsafe"}`);
+    assert.throws(
+      () => normalizeEngineInspection({
+        ...assets,
+        errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details }]
+      }),
+      /details.*plain/i,
+      key
+    );
+  }
+
+  let calls = 0;
+  const accessorError = { code: 'model_incomplete', action: 'Repair.' };
+  Object.defineProperty(accessorError, 'message', {
+    enumerable: true,
+    get() { calls += 1; return 'Incomplete.'; }
+  });
+  assert.throws(
+    () => normalizeEngineInspection({ ...assets, errors: [accessorError] }),
+    /error.*field/i
+  );
+  assert.equal(calls, 0);
+
+  const accessorInspection = { ...assets };
+  Object.defineProperty(accessorInspection, 'errors', {
+    enumerable: true,
+    get() { calls += 1; return []; }
+  });
+  assert.throws(() => normalizeEngineInspection(accessorInspection), /errors.*array/i);
+  assert.equal(calls, 0);
+});
+
+test('bounds deep, wide, and numerous detail values with controlled errors', () => {
+  const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
+  const errorFor = (details) => ({ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details });
+  let deep = 'leaf';
+  for (let index = 0; index < 128; index += 1) deep = { deep };
+  const wideObject = Object.fromEntries(Array.from({ length: 512 }, (_value, index) => [`key${index}`, index]));
+  const wideArray = Array.from({ length: 512 }, (_value, index) => index);
+  const manyNodes = Array.from({ length: 2048 }, () => ({ value: 'node' }));
+  for (const details of [deep, wideObject, wideArray, manyNodes]) {
+    assert.throws(
+      () => normalizeEngineInspection({ ...assets, errors: [errorFor(details)] }),
+      /details.*(plain|limit)/i
+    );
+  }
+});
+
 test('rejects malformed healthy and errors fields instead of coercing them', () => {
   const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
   for (const healthy of [undefined, null, 'false', 0, 1, {}, []]) {
