@@ -150,3 +150,34 @@ test('queues stop behind an in-flight resume', async () => {
   assert.deepEqual(calls, ['start', 'stop', 'start', 'stop']);
   assert.equal(controller.getSnapshot().session.phase, 'idle');
 });
+
+test('publisher and subscriber failures are reported without aborting transitions or later observers', async () => {
+  const captureCalls = [];
+  const observedRevisions = [];
+  const observerErrors = [];
+  const controller = new SessionController({
+    now: (() => { let value = 0; return () => ++value; })(),
+    startCapture: async () => captureCalls.push('start'),
+    publish: () => { throw new Error('publisher failed'); },
+    onObserverError: (error, details) => observerErrors.push({
+      message: error.message,
+      kind: details.kind,
+      revision: details.snapshot.revision
+    })
+  });
+  controller.subscribe(() => { throw new Error('subscriber failed'); });
+  controller.subscribe((snapshot) => observedRevisions.push(snapshot.revision));
+
+  await controller.start();
+  controller.dispatch({ type: 'SOURCE_UPDATED', source: 'mic', patch: { phase: 'live' } });
+
+  assert.deepEqual(captureCalls, ['start']);
+  assert.equal(controller.getSnapshot().session.phase, 'listening');
+  assert.deepEqual(observedRevisions, [1, 2]);
+  assert.deepEqual(observerErrors, [
+    { message: 'publisher failed', kind: 'publish', revision: 1 },
+    { message: 'subscriber failed', kind: 'subscriber', revision: 1 },
+    { message: 'publisher failed', kind: 'publish', revision: 2 },
+    { message: 'subscriber failed', kind: 'subscriber', revision: 2 }
+  ]);
+});

@@ -69,6 +69,98 @@
     return { start, stop };
   }
 
+  function isActiveSession(snapshot) {
+    const phase = snapshot && snapshot.session && snapshot.session.phase;
+    return phase === 'starting' || phase === 'listening';
+  }
+
+  function describeSystemCaptureError(error, { userGesture = false } = {}) {
+    const name = error && error.name;
+    if (!userGesture && (name === 'InvalidStateError' || name === 'NotAllowedError'
+      || name === 'PermissionDeniedError' || name === 'SecurityError')) {
+      return {
+        code: 'gesture_required',
+        message: 'Meeting audio needs a click in Cue. End this session, then choose Start listening in the overlay to grant screen and audio access.'
+      };
+    }
+    const code = String(error?.code || name || 'capture_failed').trim().slice(0, 64) || 'capture_failed';
+    const message = String(error?.message || error || 'Meeting audio capture failed.').trim().slice(0, 500)
+      || 'Meeting audio capture failed.';
+    return { code, message };
+  }
+
+  function createSessionCaptureReconciler({
+    startMic,
+    startSystem,
+    stopMic,
+    stopSystem,
+    onSystemError = () => {}
+  }) {
+    let captureWanted = false;
+    let bootstrapSequence = 0;
+    let activeBootstrap = null;
+
+    function startSystemSafely(userGesture) {
+      let result;
+      try {
+        result = startSystem();
+      } catch (error) {
+        try { onSystemError(error, { userGesture }); } catch (_) { /* presentation is best effort */ }
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(result).catch((error) => {
+        try { onSystemError(error, { userGesture }); } catch (_) { /* presentation is best effort */ }
+        return null;
+      });
+    }
+
+    function beginSystemBootstrap() {
+      const token = Object.freeze({ id: ++bootstrapSequence });
+      activeBootstrap = token;
+      void startSystemSafely(true);
+      return token;
+    }
+
+    function completeSystemBootstrap(token) {
+      if (activeBootstrap === token) activeBootstrap = null;
+    }
+
+    function cancelSystemBootstrap(token) {
+      if (activeBootstrap !== token) return;
+      activeBootstrap = null;
+      stopSystem();
+    }
+
+    function reconcile(snapshot) {
+      const active = isActiveSession(snapshot);
+      if (active === captureWanted) return;
+      captureWanted = active;
+      if (active) {
+        try { Promise.resolve(startMic()).catch(() => {}); } catch (_) { /* mic reports its own error */ }
+        if (!activeBootstrap) void startSystemSafely(false);
+      } else {
+        stopMic();
+        stopSystem();
+      }
+    }
+
+    async function command(name, invoke, { bootstrapSystem = false } = {}) {
+      const bootstrap = bootstrapSystem ? beginSystemBootstrap() : null;
+      try {
+        const snapshot = await invoke(name);
+        if (bootstrap && !isActiveSession(snapshot)) cancelSystemBootstrap(bootstrap);
+        reconcile(snapshot);
+        if (bootstrap) completeSystemBootstrap(bootstrap);
+        return snapshot;
+      } catch (error) {
+        if (bootstrap) cancelSystemBootstrap(bootstrap);
+        throw error;
+      }
+    }
+
+    return { command, reconcile };
+  }
+
   function connectAudioWorklet({ audioContext, mediaStream, WorkletNode, onPcm }) {
     let source = null;
     let worklet = null;
@@ -163,6 +255,8 @@
     connectScriptProcessor,
     createAudioCaptureGraph,
     createCaptureLifecycle,
+    createSessionCaptureReconciler,
+    describeSystemCaptureError,
     disconnectAudioGraph
   };
 });

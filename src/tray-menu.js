@@ -66,7 +66,6 @@ function createTrayController(dependencies = {}) {
   function update(snapshot = getSnapshot()) {
     const nextKey = snapshotKey(snapshot);
     if (destroyed || nextKey === currentSnapshotKey) return false;
-    currentSnapshotKey = nextKey;
     const template = buildTrayTemplate(snapshot, {
       show: () => dispatch('show'),
       hide: () => dispatch('hide'),
@@ -80,6 +79,7 @@ function createTrayController(dependencies = {}) {
       quit: () => dispatch('quit')
     });
     tray.setContextMenu(Menu.buildFromTemplate(template));
+    currentSnapshotKey = nextKey;
     return true;
   }
 

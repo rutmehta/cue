@@ -51,6 +51,8 @@ test('every Cue window applies content protection before loading renderer conten
 test('main restores and persists immutable per-display overlay bounds', () => {
   assert.match(mainSource, /resolveOverlayBounds\(/);
   assert.match(mainSource, /storeBoundsForDisplay\(/);
+  assert.match(mainSource, /storeOverlayBoundsState\(/);
+  assert.match(mainSource, /preferredDisplayId/);
   assert.match(mainSource, /screen\.getDisplayMatching\(/);
   assert.match(mainSource, /\.on\('moved'/);
   assert.match(mainSource, /\.on\('resized'/);

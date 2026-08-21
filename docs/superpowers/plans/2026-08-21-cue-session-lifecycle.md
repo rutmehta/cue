@@ -172,7 +172,7 @@ for (const [platform, build, mode] of [
 ]) {
   test(`applies protection on ${platform} ${build}`, () => {
     const calls = [];
-    const result = applyContentProtection({ setContentProtection: (value) => calls.push(value), isContentProtected: () => true }, { platform, windowsBuild: build });
+    const result = applyContentProtection({ setContentProtection: (value) => calls.push(value) }, { platform, windowsBuild: build });
     assert.deepEqual(calls, [true]);
     assert.equal(result.mode, mode);
     assert.equal(result.configured, true);
@@ -189,7 +189,7 @@ test('reports unsupported Linux without calling Electron', () => {
 
 - [ ] **Step 3: Implement both pure helpers**
 
-Use these exact protection modes: `macos-best-effort`, `windows-excluded`, `windows-black-fallback`, `unsupported`, `disabled`, and `error`. `CUE_NO_PROTECT` produces `disabled`. A throw or `isContentProtected() !== true` produces `error`. On every supported Windows build call `setContentProtection(true)`; do not skip pre-19041 builds.
+Use these exact protection modes: `macos-best-effort`, `windows-excluded`, `windows-black-fallback`, `unsupported`, `disabled`, and `error`. `CUE_NO_PROTECT` produces `disabled`. A throw from `setContentProtection(true)` produces `error`; a successful call reports that protection was requested but remains unverified until a later capture-path probe. Electron 33.2.1 has no `BrowserWindow.isContentProtected()` getter, so do not invent getter-based verification. On every supported Windows build call `setContentProtection(true)`; do not skip pre-19041 builds. macOS remains explicitly best effort.
 
 Bounds defaults are `{ width: 720, height: 600 }`; minimums are `{ width: 420, height: 80 }`. Clamp height to the selected work area and keep at least 96 px horizontally plus the 40 px rail vertically reachable. `storeBoundsForDisplay` returns a new object and never mutates caller data.
 

@@ -6,12 +6,14 @@ class SessionController {
     settings = {},
     startCapture = async () => {},
     stopCapture = async () => {},
-    publish = () => {}
+    publish = () => {},
+    onObserverError = (error, details) => console.error(`[session] ${details.kind} observer failed`, error)
   } = {}) {
     this._now = now;
     this._startCapture = startCapture;
     this._stopCapture = stopCapture;
     this._publish = publish;
+    this._onObserverError = onObserverError;
     this._snapshot = createInitialSnapshot({ now: this._now(), settings });
     this._listeners = new Set();
     this._queueTail = Promise.resolve();
@@ -126,10 +128,24 @@ class SessionController {
   }
 
   _publishSnapshot() {
-    this._publish(this._snapshot);
-    for (const listener of this._listeners) {
-      listener(this._snapshot);
+    try {
+      this._publish(this._snapshot);
+    } catch (error) {
+      this._reportObserverError(error, 'publish');
     }
+    for (const listener of this._listeners) {
+      try {
+        listener(this._snapshot);
+      } catch (error) {
+        this._reportObserverError(error, 'subscriber');
+      }
+    }
+  }
+
+  _reportObserverError(error, kind) {
+    try {
+      this._onObserverError(error, { kind, snapshot: this._snapshot });
+    } catch (_) { /* observer diagnostics cannot own the transition */ }
   }
 
   _captureFailed(error) {

@@ -561,19 +561,20 @@
   cue.on('hide:toggle', toggleHide);
   $('#quit-btn').addEventListener('click', () => { void cue.sessionCommand('quit'); });
 
-  // Start/end listening. Kick off system-audio capture straight from the click so
-  // the user-gesture is fresh for getDisplayMedia (loopback capture needs it).
+  // Start/end listening. The capture reconciler starts system audio synchronously
+  // for overlay clicks so getDisplayMedia receives the current user gesture.
   $('#stop-btn').addEventListener('click', async () => {
     const phase = latestSessionSnapshot?.session?.phase || 'idle';
     const turningOn = phase === 'idle' || phase === 'error' || phase === 'paused';
-    if (turningOn) {
-      // startSystemAudio may fail (user cancels, no permission) — that's OK,
-      // mic will still work and capture will toggle regardless
-      void startSystemAudio();
-    }
     const command = phase === 'paused' ? 'resume' : turningOn ? 'start' : 'end-session';
-    const snapshot = await cue.sessionCommand(command);
-    if (turningOn && (!snapshot || snapshot.session?.phase === 'error')) stopSystemAudio();
+    try {
+      await captureReconciler.command(command, (name) => cue.sessionCommand(name), {
+        bootstrapSystem: turningOn
+      });
+    } catch (error) {
+      showStatus('Listening could not be started. Check Cue permissions and try again.');
+      cue.log('session command failed: ' + (error.message || String(error)));
+    }
   });
 
   // Transcript toggle removed — sidebar now auto-opens with listening
@@ -602,7 +603,13 @@
   }
 
   // ---- capture: mic + system audio (renderer side) ----------------------
-  const { createAudioCaptureGraph, createCaptureLifecycle, disconnectAudioGraph } = window.CaptureLifecycle;
+  const {
+    createAudioCaptureGraph,
+    createCaptureLifecycle,
+    createSessionCaptureReconciler,
+    describeSystemCaptureError,
+    disconnectAudioGraph
+  } = window.CaptureLifecycle;
   const stopTracks = (stream) => stream && stream.getTracks().forEach((track) => track.stop());
   function disconnectCapture(capture) {
     if (!capture) return;
@@ -701,16 +708,23 @@
       error: error ? sourceError(error) : null
     })
   });
-  function startSystemAudio() {
-    return systemCapture.start().catch((error) => {
-      cue.log('system audio error: ' + (error.message || String(error)));
-      showStatus(error.code === 'unsupported'
-        ? (error.message || 'Meeting audio capture is unavailable; microphone capture can continue.')
-        : 'Meeting audio could not be started. Grant screen/audio access to cue and try again.');
-      return null;
-    });
-  }
+  function startSystemAudio() { return systemCapture.start(); }
   function stopSystemAudio() { systemCapture.stop(); }
+  const captureReconciler = createSessionCaptureReconciler({
+    startMic,
+    startSystem: startSystemAudio,
+    stopMic,
+    stopSystem: stopSystemAudio,
+    onSystemError: (error, context) => {
+      const detail = describeSystemCaptureError(error, context);
+      cue.log('system audio error: ' + detail.message);
+      showStatus(detail.message);
+      cue.sourceUpdate('system', {
+        phase: detail.code === 'unsupported' ? 'unsupported' : 'error',
+        error: detail
+      });
+    }
+  });
 
   // ---- STT / VAD status helpers ------------------------------------------
   // Live dot states: 'off' | 'idle' | 'speaking' | 'transcribing'
@@ -905,16 +919,14 @@
 
     if (active) {
       setLiveDotState(phase === 'starting' ? 'transcribing' : 'idle');
-      void startMic();
     } else {
       setLiveDotState('off');
-      stopMic();
-      stopSystemAudio();
       if (interimEl) {
         interimEl.textContent = '';
         interimEl.classList.remove('show');
       }
     }
+    captureReconciler.reconcile(snapshot);
 
     const stt = snapshot.stt || {};
     if (stt.route === 'local' && active) {

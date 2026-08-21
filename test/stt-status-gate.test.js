@@ -6,7 +6,8 @@ const {
   batchStatusForResult,
   createBatchAttemptGate,
   createGenerationGate,
-  createLocalSttCallbackGate
+  createLocalSttCallbackGate,
+  createStreamingCallbackGate
 } = require('../src/stt-status-gate');
 
 test('invalidates local STT callbacks from an engine that is stopping', () => {
@@ -104,4 +105,28 @@ test('batch attempt ordering stays unique beyond Number.MAX_SAFE_INTEGER', () =>
   assert.notEqual(typeof beforeBoundary.epoch, 'number');
   assert.deepEqual(gate.commit(afterBoundary), { effects: true, transcript: true });
   assert.deepEqual(gate.commit(beforeBoundary), { effects: false, transcript: true });
+});
+
+test('streaming callback guards reject every callback from stopped and replaced captures', () => {
+  const gate = createStreamingCallbackGate();
+  const events = [];
+  const first = gate.begin();
+  const firstCallbacks = ['transcript', 'interim', 'error', 'status'].map((kind) => (
+    gate.guard(first, (value) => events.push(`${kind}:${value}`))
+  ));
+
+  firstCallbacks.forEach((callback) => callback('first'));
+  const second = gate.begin();
+  firstCallbacks.forEach((callback) => callback('stale'));
+  gate.guard(second, (value) => events.push(`second:${value}`))('current');
+  gate.invalidate(second);
+  gate.guard(second, (value) => events.push(`second:${value}`))('stopped');
+
+  assert.deepEqual(events, [
+    'transcript:first',
+    'interim:first',
+    'error:first',
+    'status:first',
+    'second:current'
+  ]);
 });

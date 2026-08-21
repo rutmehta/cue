@@ -12,13 +12,14 @@ const { createStreamingSTT } = require('./src/stt-streaming');
 const { AdaptiveVAD, AudioRingBuffer } = require('./src/vad');
 const { startAppLink, stopAppLink, recordEvent, appLinkConsentState, revokeAppLinkCaller } = require('./src/applink');
 const { applyContentProtection } = require('./src/capture-protection');
+const { createDisplayMediaRequestHandler } = require('./src/display-media');
 const { IPC_EVENTS, IPC_INVOKES, IPC_SENDS } = require('./src/ipc-contract');
 const { createLifecycleCoordinator, decideWindowClose } = require('./src/lifecycle');
 const { SessionController } = require('./src/session-controller');
 const { createTrayController } = require('./src/tray-menu');
-const { resolveOverlayBounds, storeBoundsForDisplay } = require('./src/window-state');
+const { resolveOverlayBounds, storeBoundsForDisplay, storeOverlayBoundsState } = require('./src/window-state');
 const { isOverlaySender, parseSourceUpdatePayload } = require('./src/source-update');
-const { batchStatusForResult, createBatchAttemptGate, createLocalSttCallbackGate } = require('./src/stt-status-gate');
+const { batchStatusForResult, createBatchAttemptGate, createLocalSttCallbackGate, createStreamingCallbackGate } = require('./src/stt-status-gate');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -78,6 +79,8 @@ let llmRequestSequence = 0;
 const localSttCallbackGate = createLocalSttCallbackGate();
 let localSttCallbackToken = null;
 const batchAttemptGate = createBatchAttemptGate();
+const streamingCallbackGate = createStreamingCallbackGate();
+let streamingCallbackToken = null;
 
 // -------- streaming STT state --------
 let streamingSTT = { you: null, them: null }; // streaming STT instances per channel
@@ -282,6 +285,7 @@ function createWindow() {
   const displays = screen.getAllDisplays();
   const primaryDisplay = screen.getPrimaryDisplay();
   let savedByDisplay = savedSettings.overlay?.boundsByDisplay || {};
+  let preferredDisplayId = savedSettings.overlay?.preferredDisplayId ?? null;
   if (Object.keys(savedByDisplay).length === 0
     && savedSettings.windowX !== null && savedSettings.windowY !== null) {
     savedByDisplay = storeBoundsForDisplay(savedByDisplay, primaryDisplay.id, {
@@ -290,10 +294,12 @@ function createWindow() {
       width: 720,
       height: 600
     });
+    preferredDisplayId = primaryDisplay.id;
   }
   const { displayId: _displayId, ...bounds } = resolveOverlayBounds({
     displays,
     primaryDisplayId: primaryDisplay.id,
+    preferredDisplayId,
     savedByDisplay
   });
 
@@ -341,10 +347,8 @@ function createWindow() {
       const currentBounds = createdWindow.getBounds();
       const display = screen.getDisplayMatching(currentBounds);
       const currentSettings = store.getSettings();
-      const currentSaved = currentSettings.overlay?.boundsByDisplay || {};
-      const nextSaved = storeBoundsForDisplay(currentSaved, display.id, currentBounds);
       store.setSettings({
-        overlay: { ...(currentSettings.overlay || {}), boundsByDisplay: nextSaved }
+        overlay: storeOverlayBoundsState(currentSettings.overlay, display.id, currentBounds)
       });
     }, 500);
   };
@@ -455,22 +459,25 @@ function stopFlushLoop() { if (flushTimer) { clearInterval(flushTimer); flushTim
 function initStreamingSTT() {
   const settings = store.getSettings();
   streamingMode = false;
+  const callbackToken = streamingCallbackGate.begin();
+  streamingCallbackToken = callbackToken;
+  const guard = (callback) => streamingCallbackGate.guard(callbackToken, callback);
 
   ['you', 'them'].forEach((channel) => {
     let activeProvider = settings.sttProvider || 'auto';
     const sttInstance = createStreamingSTT(settings, channel, {
-      onTranscript: (ch, text) => {
+      onTranscript: guard((ch, text) => {
         const turn = { channel: ch, text, ts: Date.now() };
         pushTranscript(turn);
         dispatchSession({ type: 'TRANSCRIPT_FINAL', source: sourceForChannel(ch), text });
         send('transcript', turn);
         send('stt:final', { channel: ch, text });
-      },
-      onInterim: (ch, text) => {
+      }),
+      onInterim: guard((ch, text) => {
         dispatchSession({ type: 'TRANSCRIPT_INTERIM', source: sourceForChannel(ch), text });
         send('stt:interim', { channel: ch, text });
-      },
-      onError: (err) => {
+      }),
+      onError: guard((err) => {
         console.log('[streaming-stt] error', err.provider, err.message);
         const batch = createSTT(settings);
         stopStreamingSTT(); // close WebSockets and clear keep-alive intervals
@@ -487,8 +494,8 @@ function initStreamingSTT() {
           send('status', { message: `Transcription stopped (${err.provider}): ${err.message}. The selected provider has no batch fallback.` });
         }
         streamingMode = false;
-      },
-      onStatusChange: (ch, status) => {
+      }),
+      onStatusChange: guard((ch, status) => {
         send('stt:status', { channel: ch, status });
         if (status === 'disconnected' && (!state.capturing || !streamingMode)) return;
         publishSttStatus(status, {
@@ -500,7 +507,7 @@ function initStreamingSTT() {
         if (status === 'connected') {
           console.log(`[streaming-stt] ${ch} channel connected`);
         }
-      }
+      })
     });
     activeProvider = sttInstance.provider;
 
@@ -511,10 +518,18 @@ function initStreamingSTT() {
     }
   });
 
+  if (!streamingMode) {
+    streamingCallbackGate.invalidate(callbackToken);
+    if (streamingCallbackToken === callbackToken) streamingCallbackToken = null;
+  }
+
   return streamingMode;
 }
 
 function stopStreamingSTT() {
+  const callbackToken = streamingCallbackToken;
+  streamingCallbackToken = null;
+  streamingCallbackGate.invalidate(callbackToken);
   ['you', 'them'].forEach((channel) => {
     if (streamingSTT[channel]) {
       streamingSTT[channel].disconnect();
@@ -1139,15 +1154,10 @@ async function launchApp() {
 
   // System-audio loopback for getDisplayMedia: hand back a screen source with 'loopback'
   // audio so the renderer can capture what's playing (Zoom/Meet) using Cue's own grant.
-  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      if (!sources.length) return callback();
-      const request = { video: sources[0] };
-      if (isWindows) request.audio = true;
-      else request.audio = 'loopback';
-      callback(request);
-    }).catch(() => callback());
-  }, { useSystemPicker: false });
+  session.defaultSession.setDisplayMediaRequestHandler(
+    createDisplayMediaRequestHandler({ desktopCapturer }),
+    { useSystemPicker: false }
+  );
 
   sessionController = new SessionController({
     settings: store.getSettings(),
@@ -1156,7 +1166,15 @@ async function launchApp() {
       if (!active) throw new Error('Capture could not be started.');
     },
     stopCapture: () => setCapturing(false),
-    publish: publishSessionSnapshot
+    publish: publishSessionSnapshot,
+    onObserverError: (error, details) => recordEvent({
+      level: 'error',
+      event: 'session_observer_failed',
+      code: details.kind,
+      msg: error?.message || String(error),
+      frame: 'SessionController',
+      context: { revision: details.snapshot.revision }
+    })
   });
 
   createWindow();

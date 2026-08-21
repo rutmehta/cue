@@ -7,6 +7,8 @@ const {
   connectAudioWorklet,
   connectScriptProcessor,
   createCaptureLifecycle,
+  createSessionCaptureReconciler,
+  describeSystemCaptureError,
   disconnectAudioGraph
 } = require('../renderer/capture-lifecycle');
 
@@ -361,4 +363,53 @@ test('strict unhandled-rejection mode consumes a hostile native observer promise
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, '{"legacy":true,"thenAccesses":0,"catchAccesses":0}');
+});
+
+test('a recreated renderer reconciles both sources once from an already-active snapshot', async () => {
+  const calls = [];
+  const reconciler = createSessionCaptureReconciler({
+    startMic: async () => calls.push('start-mic'),
+    startSystem: async () => calls.push('start-system'),
+    stopMic: () => calls.push('stop-mic'),
+    stopSystem: () => calls.push('stop-system')
+  });
+  const activeSnapshot = {
+    revision: 42,
+    session: { phase: 'listening' },
+    sources: { mic: { phase: 'live' }, system: { phase: 'live' } }
+  };
+
+  reconciler.reconcile(activeSnapshot);
+  reconciler.reconcile({ ...activeSnapshot, revision: 43 });
+  await Promise.resolve();
+  reconciler.reconcile({ revision: 44, session: { phase: 'paused' } });
+
+  assert.deepEqual(calls, ['start-mic', 'start-system', 'stop-mic', 'stop-system']);
+});
+
+test('a rejected start command stops the gesture-bootstrapped system capture generation', async () => {
+  const calls = [];
+  const reconciler = createSessionCaptureReconciler({
+    startMic: async () => calls.push('start-mic'),
+    startSystem: async () => calls.push('start-system'),
+    stopMic: () => calls.push('stop-mic'),
+    stopSystem: () => calls.push('stop-system')
+  });
+
+  await assert.rejects(reconciler.command('start', async (command) => {
+    calls.push(`command-${command}`);
+    throw new Error('main rejected start');
+  }, { bootstrapSystem: true }), /main rejected start/);
+
+  assert.deepEqual(calls, ['start-system', 'command-start', 'stop-system']);
+});
+
+test('non-gesture display denial reports an actionable source error', () => {
+  const error = new Error('Not allowed without transient activation');
+  error.name = 'InvalidStateError';
+
+  assert.deepEqual(describeSystemCaptureError(error, { userGesture: false }), {
+    code: 'gesture_required',
+    message: 'Meeting audio needs a click in Cue. End this session, then choose Start listening in the overlay to grant screen and audio access.'
+  });
 });

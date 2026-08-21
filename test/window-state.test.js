@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { resolveOverlayBounds, storeBoundsForDisplay } = require('../src/window-state');
+const { resolveOverlayBounds, storeBoundsForDisplay, storeOverlayBoundsState } = require('../src/window-state');
 
 test('restores the matching display and recenters when that display disappeared', () => {
   const displays = [
@@ -55,4 +55,53 @@ test('stores a copied bounds record for one display without mutating saved state
   assert.notEqual(updated[2], bounds);
   assert.deepEqual(saved, { 1: { x: 12, y: 34, width: 720, height: 600 } });
   assert.deepEqual(bounds, { x: 44, y: 55, width: 800, height: 500 });
+});
+
+test('restores the preferred display among multiple saved displays and recenters when it is unplugged', () => {
+  const primary = { id: 10, workArea: { x: 0, y: 0, width: 1440, height: 900 } };
+  const secondary = { id: 20, workArea: { x: 1440, y: 0, width: 1920, height: 1080 } };
+  const savedByDisplay = {
+    10: { x: 12, y: 18, width: 600, height: 400 },
+    20: { x: 1660, y: 44, width: 840, height: 520 }
+  };
+
+  assert.deepEqual(resolveOverlayBounds({
+    displays: [primary, secondary],
+    primaryDisplayId: 10,
+    preferredDisplayId: 20,
+    savedByDisplay
+  }), { x: 1660, y: 44, width: 840, height: 520, displayId: 20 });
+
+  assert.deepEqual(resolveOverlayBounds({
+    displays: [primary],
+    primaryDisplayId: 10,
+    preferredDisplayId: 20,
+    savedByDisplay
+  }), { x: 360, y: 6, width: 720, height: 600, displayId: 10 });
+});
+
+test('persisting overlay bounds atomically advances the preferred display without mutation', () => {
+  const overlay = {
+    opacity: 0.94,
+    preferredDisplayId: 1,
+    boundsByDisplay: { 1: { x: 10, y: 20, width: 720, height: 600 } }
+  };
+  const bounds = { x: 1500, y: 30, width: 800, height: 500 };
+
+  const updated = storeOverlayBoundsState(overlay, 2, bounds);
+
+  assert.deepEqual(updated, {
+    opacity: 0.94,
+    preferredDisplayId: 2,
+    boundsByDisplay: {
+      1: { x: 10, y: 20, width: 720, height: 600 },
+      2: { x: 1500, y: 30, width: 800, height: 500 }
+    }
+  });
+  assert.notStrictEqual(updated, overlay);
+  assert.deepEqual(overlay, {
+    opacity: 0.94,
+    preferredDisplayId: 1,
+    boundsByDisplay: { 1: { x: 10, y: 20, width: 720, height: 600 } }
+  });
 });

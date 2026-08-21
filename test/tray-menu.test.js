@@ -150,3 +150,32 @@ test('tray destruction still runs once when unsubscription throws', () => {
   controller.destroy();
   assert.equal(destroyed, 1);
 });
+
+test('tray menu retries the same snapshot after native installation fails', () => {
+  const installed = [];
+  let failNextInstall = false;
+  const controller = createTrayController({
+    Tray: class {
+      setContextMenu(menu) {
+        if (failNextInstall) {
+          failNextInstall = false;
+          throw new Error('native menu rejected');
+        }
+        installed.push(menu);
+      }
+      on() {}
+    },
+    Menu: { buildFromTemplate: (template) => template },
+    icon: 'cue-icon',
+    command: () => {},
+    getSnapshot: () => ({ session: { phase: 'idle' }, overlay: { visible: false } })
+  });
+  const listening = { session: { phase: 'listening' }, overlay: { visible: false } };
+
+  failNextInstall = true;
+  assert.throws(() => controller.update(listening), /native menu rejected/);
+  assert.equal(controller.update(listening), true);
+
+  assert.equal(installed.length, 2);
+  assert.equal(installed[1][1].label, 'Pause Listening');
+});

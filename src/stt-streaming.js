@@ -29,10 +29,17 @@ class OpenAIRealtimeSTT {
     this._reconnectDelay = 1000;
     this._pendingAudio = [];
     this._sessionReady = false;
+    this._reconnectTimer = null;
+    this._disconnectRequested = false;
   }
 
   async connect() {
     if (this.ws && this.connected) return;
+    this._disconnectRequested = false;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
 
     try {
       const WebSocket = require('ws');
@@ -82,7 +89,7 @@ class OpenAIRealtimeSTT {
         this.connected = false;
         this._sessionReady = false;
         this.onStatusChange('disconnected');
-        if (code !== 1000 && !this.reconnecting) {
+        if (code !== 1000 && !this.reconnecting && !this._disconnectRequested) {
           this._attemptReconnect();
         }
       });
@@ -188,6 +195,7 @@ class OpenAIRealtimeSTT {
   }
 
   _attemptReconnect() {
+    if (this._disconnectRequested || this._reconnectTimer) return;
     if (this._reconnectAttempts >= this._maxReconnectAttempts) {
       this.onError({ provider: 'openai-realtime', message: 'Max reconnection attempts reached', status: null });
       return;
@@ -195,13 +203,24 @@ class OpenAIRealtimeSTT {
     this.reconnecting = true;
     this._reconnectAttempts++;
     const delay = this._reconnectDelay * Math.pow(2, this._reconnectAttempts - 1);
-    setTimeout(() => {
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (this._disconnectRequested) {
+        this.reconnecting = false;
+        return;
+      }
       this.reconnecting = false;
       this.connect();
     }, Math.min(delay, 16000));
   }
 
   disconnect() {
+    this._disconnectRequested = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this.reconnecting = false;
     this._sessionReady = false;
     this._pendingAudio = [];
     if (this.ws) {
@@ -232,10 +251,17 @@ class DeepgramStreamingSTT {
     this._reconnectDelay = 1000;
     this._keepAliveInterval = null;
     this._committed = ''; // is_final segments not yet closed out by speech_final
+    this._reconnectTimer = null;
+    this._disconnectRequested = false;
   }
 
   async connect() {
     if (this.ws && this.connected) return;
+    this._disconnectRequested = false;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
 
     try {
       const WebSocket = require('ws');
@@ -282,7 +308,7 @@ class DeepgramStreamingSTT {
         this.connected = false;
         this._clearKeepAlive();
         this.onStatusChange('disconnected');
-        if (code !== 1000) this._attemptReconnect();
+        if (code !== 1000 && !this._disconnectRequested) this._attemptReconnect();
       });
 
       this.ws.on('error', (err) => {
@@ -344,16 +370,25 @@ class DeepgramStreamingSTT {
   }
 
   _attemptReconnect() {
+    if (this._disconnectRequested || this._reconnectTimer) return;
     if (this._reconnectAttempts >= this._maxReconnectAttempts) {
       this.onError({ provider: 'deepgram', message: 'Max reconnection attempts reached', status: null });
       return;
     }
     this._reconnectAttempts++;
     const delay = this._reconnectDelay * Math.pow(2, this._reconnectAttempts - 1);
-    setTimeout(() => this.connect(), Math.min(delay, 16000));
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (!this._disconnectRequested) this.connect();
+    }, Math.min(delay, 16000));
   }
 
   disconnect() {
+    this._disconnectRequested = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this._flushCommitted();
     this._clearKeepAlive();
     if (this.ws) {

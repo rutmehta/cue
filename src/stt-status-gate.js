@@ -112,10 +112,32 @@ function createLocalSttCallbackGate() {
   };
 }
 
+function createStreamingCallbackGate() {
+  let activeToken = null;
+
+  return {
+    begin() {
+      activeToken = Symbol('streaming-capture');
+      return activeToken;
+    },
+    invalidate(token) {
+      if (arguments.length === 0 || token === activeToken) activeToken = null;
+    },
+    guard(token, callback) {
+      if (typeof callback !== 'function') throw new TypeError('Streaming callback must be a function.');
+      return (...args) => {
+        if (activeToken !== token) return undefined;
+        return callback(...args);
+      };
+    }
+  };
+}
+
 module.exports = {
   MAX_STT_DETAIL_CHARS,
   batchStatusForResult,
   createBatchAttemptGate,
   createGenerationGate,
-  createLocalSttCallbackGate
+  createLocalSttCallbackGate,
+  createStreamingCallbackGate
 };

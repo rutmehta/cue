@@ -22,25 +22,31 @@ function findDisplay(displays, displayId) {
   return displays.find((display) => String(display.id) === String(displayId));
 }
 
-function selectDisplay(displays, primaryDisplayId, savedByDisplay) {
+function selectDisplay(displays, primaryDisplayId, savedByDisplay, preferredDisplayId) {
   const primary = findDisplay(displays, primaryDisplayId) || displays[0];
+  if (preferredDisplayId !== undefined && preferredDisplayId !== null) {
+    const preferred = findDisplay(displays, preferredDisplayId);
+    return preferred
+      ? { display: preferred, useSavedBounds: true }
+      : { display: primary, useSavedBounds: false };
+  }
   const savedDisplay = displays.find((display) => Object.prototype.hasOwnProperty.call(savedByDisplay, display.id));
-  return savedDisplay || primary;
+  return { display: savedDisplay || primary, useSavedBounds: Boolean(savedDisplay) };
 }
 
 function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
-function resolveOverlayBounds({ displays, primaryDisplayId, savedByDisplay = {} } = {}) {
+function resolveOverlayBounds({ displays, primaryDisplayId, preferredDisplayId, savedByDisplay = {} } = {}) {
   if (!Array.isArray(displays) || displays.length === 0) {
     throw new TypeError('At least one display is required to resolve overlay bounds.');
   }
 
   const safeSaved = savedByDisplay && typeof savedByDisplay === 'object' ? savedByDisplay : {};
-  const display = selectDisplay(displays, primaryDisplayId, safeSaved);
+  const { display, useSavedBounds } = selectDisplay(displays, primaryDisplayId, safeSaved, preferredDisplayId);
   const workArea = requireWorkArea(display);
-  const saved = safeSaved[display.id];
+  const saved = useSavedBounds ? safeSaved[display.id] : null;
   const hasSavedBounds = saved && typeof saved === 'object';
 
   const width = Math.max(MINIMUM_BOUNDS.width, finiteNumber(saved?.width, DEFAULT_BOUNDS.width));
@@ -76,9 +82,19 @@ function storeBoundsForDisplay(saved, displayId, bounds) {
   ]);
 }
 
+function storeOverlayBoundsState(overlay, displayId, bounds) {
+  const current = overlay && typeof overlay === 'object' && !Array.isArray(overlay) ? overlay : {};
+  return {
+    ...current,
+    preferredDisplayId: displayId,
+    boundsByDisplay: storeBoundsForDisplay(current.boundsByDisplay, displayId, bounds)
+  };
+}
+
 module.exports = {
   DEFAULT_BOUNDS,
   MINIMUM_BOUNDS,
   resolveOverlayBounds,
-  storeBoundsForDisplay
+  storeBoundsForDisplay,
+  storeOverlayBoundsState
 };
