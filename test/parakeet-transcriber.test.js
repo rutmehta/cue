@@ -719,6 +719,55 @@ test('observer-installed array setters cannot intercept nested error snapshots',
   await engine.stop();
 });
 
+test('status cloning preserves standard dense, sparse, and trailing-hole array lengths', async () => {
+  const harness = createHarness();
+  const sparse = new Array(3);
+  const trailing = ['first'];
+  trailing.length = 4;
+  const dense = ['first', 'second'];
+  const extra = ['value'];
+  extra.length = 3;
+  Object.defineProperty(extra, 'label', {
+    value: 'kept', writable: true, enumerable: true, configurable: true
+  });
+  const details = { sparse, trailing, dense, extra };
+  harness.dependencies.findPort = async () => {
+    throw new LocalSttError(
+      'port_unavailable',
+      'No port is available.',
+      'Close the conflicting process.',
+      details
+    );
+  };
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  let cloned;
+  engine.onStatus((status) => {
+    if (status.status === 'error') cloned = status.error.details;
+  });
+
+  await expectCode(engine.start(harness.inspection), 'port_unavailable');
+  assert.notStrictEqual(cloned, details);
+  assert.notStrictEqual(cloned.sparse, sparse);
+  assert.equal(cloned.sparse.length, 3);
+  assert.deepEqual(Object.keys(cloned.sparse), []);
+  assert.equal(Object.hasOwn(cloned.sparse, 0), false);
+  assert.equal(Object.hasOwn(cloned.sparse, 2), false);
+  assert.equal(cloned.trailing.length, 4);
+  assert.deepEqual(Object.keys(cloned.trailing), ['0']);
+  assert.equal(Object.hasOwn(cloned.trailing, 3), false);
+  assert.equal(cloned.dense.length, 2);
+  assert.deepEqual(cloned.dense, ['first', 'second']);
+  assert.equal(cloned.extra.length, 3);
+  assert.deepEqual(Object.keys(cloned.extra), ['0', 'label']);
+  assert.equal(cloned.extra.label, 'kept');
+  assert.equal(JSON.stringify(cloned), JSON.stringify(details));
+  assert.equal(Object.isFrozen(cloned.sparse), true);
+  assert.equal(Object.isFrozen(cloned.trailing), true);
+  assert.equal(Object.isFrozen(cloned.dense), true);
+  assert.equal(Object.isFrozen(cloned.extra), true);
+  await engine.stop();
+});
+
 test('consumes rejected thenables returned by status observers', async () => {
   const harness = createHarness();
   const engine = new ParakeetTranscriber(harness.dependencies);
@@ -856,6 +905,106 @@ test('listener-registration failure still bounds and kills the exact live spawn 
   await restarted;
   assert.equal(harness.spawnCalls.length, 2);
   await engine.stop();
+});
+
+test('non-finite, negative, and fractional exit codes remain owned through bounded TERM and KILL disposal', async () => {
+  for (const exitCode of [NaN, Infinity, -1, 1.5]) {
+    const harness = createHarness();
+    const replacement = new FakeChild();
+    replacement.pid = 5402;
+    harness.child.stderr = null;
+    harness.child.exitCode = exitCode;
+    harness.child.signalCode = null;
+    const signals = [];
+    harness.dependencies.spawn = (...args) => {
+      harness.spawnCalls.push(args);
+      return harness.spawnCalls.length === 1 ? harness.child : replacement;
+    };
+    harness.dependencies.stopProcess = (child, signal) => {
+      signals.push(signal);
+      if (child === harness.child && signal === 'SIGKILL') {
+        child.exitCode = 137;
+        child.signalCode = 'SIGKILL';
+      }
+      if (child === replacement && signal === 'SIGTERM') child.exit(0, signal);
+    };
+    const engine = new ParakeetTranscriber(harness.dependencies);
+
+    const failed = engine.start(harness.inspection);
+    let settled = false;
+    failed.catch(() => { settled = true; });
+    await tick();
+    assert.deepEqual(signals, ['SIGTERM'], `exitCode ${String(exitCode)} must remain owned`);
+    assert.equal(settled, false, `exitCode ${String(exitCode)} must wait for bounded disposal`);
+    await harness.clock.advance(1999);
+    assert.equal(settled, false);
+    await harness.clock.advance(1);
+    await expectCode(failed, 'runtime_spawn_failed');
+    assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+    assert.equal(harness.child.listenerCount('error'), 0);
+    assert.equal(harness.child.listenerCount('exit'), 0);
+
+    const restarted = engine.start(harness.inspection);
+    await tick();
+    assert.equal(harness.spawnCalls.length, 2);
+    replacement.stderr.emit('data', Buffer.from('Listening on:'));
+    await restarted;
+    await engine.stop();
+  }
+});
+
+test('zero and nonzero finite integer exit codes are terminal without signaling the process', async () => {
+  for (const exitCode of [0, 9]) {
+    const harness = createHarness();
+    harness.child.stderr = null;
+    harness.child.exitCode = exitCode;
+    harness.child.signalCode = null;
+    const signals = [];
+    harness.dependencies.stopProcess = (_child, signal) => signals.push(signal);
+    const engine = new ParakeetTranscriber(harness.dependencies);
+
+    await expectCode(engine.start(harness.inspection), 'runtime_spawn_failed');
+    assert.deepEqual(signals, []);
+    assert.equal(harness.child.listenerCount('error'), 0);
+    assert.equal(harness.child.listenerCount('exit'), 0);
+    await engine.stop();
+  }
+});
+
+test('only recognized signal names are terminal evidence for malformed spawned children', async () => {
+  for (const signalCode of ['NOT_A_SIGNAL', 'SIGTOTALLYFAKE']) {
+    const harness = createHarness();
+    harness.child.stderr = null;
+    harness.child.exitCode = null;
+    harness.child.signalCode = signalCode;
+    const signals = [];
+    harness.dependencies.stopProcess = (child, signal) => {
+      signals.push(signal);
+      if (signal === 'SIGKILL') child.signalCode = 'SIGKILL';
+    };
+    const engine = new ParakeetTranscriber(harness.dependencies);
+    const failed = engine.start(harness.inspection);
+    failed.catch(() => {});
+    await tick();
+    assert.deepEqual(signals, ['SIGTERM']);
+    await harness.clock.advance(2000);
+    await expectCode(failed, 'runtime_spawn_failed');
+    assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+    await engine.stop();
+  }
+
+  for (const signalCode of ['SIGTERM', 'SIGKILL']) {
+    const harness = createHarness();
+    harness.child.stderr = null;
+    harness.child.exitCode = null;
+    harness.child.signalCode = signalCode;
+    const signals = [];
+    harness.dependencies.stopProcess = (_child, signal) => signals.push(signal);
+    const engine = new ParakeetTranscriber(harness.dependencies);
+    await expectCode(engine.start(harness.inspection), 'runtime_spawn_failed');
+    assert.deepEqual(signals, []);
+    await engine.stop();
+  }
 });
 
 test('port lookup failure publishes a stable error and remains restartable', async () => {

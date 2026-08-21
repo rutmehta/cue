@@ -44,3 +44,10 @@
 - Retained inspection and per-observer status clones now use own data-property definitions for every object key and array index. RED probes installed inherited Object and Array setters from status observers and confirmed that neither retained state nor another observer's snapshot can be intercepted.
 - Each review residual was reproduced with a focused RED regression before its implementation. The malformed registration case additionally verifies the exact 2,000 ms TERM-to-KILL boundary and listener release without allocating a maximum-size audio buffer.
 - Post-review verification: 50 focused tests, 304 full-suite tests, and 2 isolated real-`ws` strict subprocess tests pass and exit naturally. Source/test syntax checks and `git diff --check` pass, with no retained WebSocket TCP handles or test timers.
+
+## Review Round 3
+
+- Tightened child terminal evidence so only finite, nonnegative integer exit codes or signal names recognized by the host are terminal. `NaN`, infinity, negative, fractional, and fabricated-signal values remain owned through the exact bounded TERM/KILL sequence before a replacement generation may spawn; valid zero/nonzero exit codes release ownership without signaling.
+- Preserved the exact standard-array `length` during frozen status cloning by defining the clone's own length before copying enumerable indices and properties. Dense arrays, fully sparse `Array(3)` values, trailing holes, and enumerable non-index properties now retain their native key, hole, JSON, and freezing semantics without inherited-setter writes.
+- Both residuals were reproduced as focused RED failures before their minimal fixes. The terminal matrix exercises cleanup, listener release, and successful restart for every malformed numeric value.
+- Post-review verification: 54 focused tests and 308 full-suite tests pass and exit naturally; isolated real-`ws`, syntax, and diff checks also pass.

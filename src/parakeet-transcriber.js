@@ -105,8 +105,9 @@ async function findFirstAvailablePort({ host, start, end }) {
 function childKnownExited(child) {
   if (!child || (typeof child !== 'object' && typeof child !== 'function')) return true;
   try {
-    if (typeof child.exitCode === 'number') return true;
-    if (typeof child.signalCode === 'string' && child.signalCode.length > 0) return true;
+    if (Number.isInteger(child.exitCode) && child.exitCode >= 0) return true;
+    if (typeof child.signalCode === 'string' &&
+        Object.prototype.hasOwnProperty.call(os.constants.signals, child.signalCode)) return true;
   } catch {}
   return false;
 }
@@ -172,7 +173,9 @@ function errorRecord(error) {
 
 function deepCloneFreeze(value) {
   if (value === null || typeof value !== 'object') return value;
-  const clone = Array.isArray(value) ? [] : {};
+  const isArray = Array.isArray(value);
+  const clone = isArray ? [] : {};
+  if (isArray) Object.defineProperty(clone, 'length', { value: value.length });
   for (const key of Object.keys(value)) {
     Object.defineProperty(clone, key, {
       value: deepCloneFreeze(value[key]),
