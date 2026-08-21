@@ -208,7 +208,7 @@ const TRANSCRIPT_LIMITS = Object.freeze({
 
 const MAX_TRANSCRIPT_TEXT_CHARS = 4_000;
 
-function createPromptPlan(mode, transcript) {
+function createPromptPlan(mode, transcript, userText) {
   if (!Object.hasOwn(TRANSCRIPT_LIMITS, mode)) {
     throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
   }
@@ -221,9 +221,17 @@ function createPromptPlan(mode, transcript) {
     }));
   const limit = TRANSCRIPT_LIMITS[mode];
   const includedTurns = limit === null ? [] : validTurns.slice(-limit);
+  const plannedUserText = typeof userText === 'string'
+    ? userText.trim().slice(0, MAX_TRANSCRIPT_TEXT_CHARS)
+    : '';
+  const categoryTranscript = mode === 'answerThis' && plannedUserText
+    ? [{ channel: 'them', text: plannedUserText }]
+    : includedTurns;
   return {
     transcript: includedTurns,
-    category: mode === 'leetcode' ? null : detectCategory(includedTurns)
+    categoryTranscript,
+    userText: plannedUserText,
+    category: mode === 'leetcode' ? null : detectCategory(categoryTranscript)
   };
 }
 
@@ -238,9 +246,9 @@ function contextUsedFor(definition, transcript, screenIncluded) {
 function buildFeaturePrompt(mode, ctx, { screenIncluded = false } = {}) {
   const definition = MODES[mode];
   if (!definition) throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
-  const plan = createPromptPlan(mode, ctx.transcript);
+  const plan = createPromptPlan(mode, ctx.transcript, ctx.userText);
   return {
-    text: definition.build({ ...ctx, transcript: plan.transcript }),
+    text: definition.build({ ...ctx, userText: plan.userText, transcript: plan.transcript }),
     contextUsed: contextUsedFor(definition, plan.transcript, screenIncluded)
   };
 }
@@ -248,13 +256,13 @@ function buildFeaturePrompt(mode, ctx, { screenIncluded = false } = {}) {
 function buildFeatureRequest(mode, ctx = {}) {
   const definition = MODES[mode];
   if (!definition) throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
-  const plan = ctx.plan || createPromptPlan(mode, ctx.transcript);
+  const plan = ctx.plan || createPromptPlan(mode, ctx.transcript, ctx.userText);
   const settings = ctx.settings || {};
-  const contextBlock = buildInterviewContext(settings, mode, plan.transcript);
+  const contextBlock = buildInterviewContext(settings, mode, plan.categoryTranscript);
   const system = definition.buildSystem
     ? definition.buildSystem(contextBlock, settings.aiRules || '')
     : (definition.system || '');
-  const text = definition.build({ ...ctx, transcript: plan.transcript });
+  const text = definition.build({ ...ctx, userText: plan.userText, transcript: plan.transcript });
   return {
     category: plan.category,
     system,

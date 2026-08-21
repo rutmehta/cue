@@ -123,3 +123,38 @@ test('filters invalid and empty transcript values before rendering and attributi
   assert.doesNotMatch(request.text, /null|undefined|false|injected/);
   assert.deepEqual(request.contextUsed, { screen: false, mic: true, system: false });
 });
+
+test('Answer This categorizes its selected question without attributing unrelated transcript', () => {
+  const cases = [
+    {
+      question: 'What are your salary expectations?',
+      category: 'compensation',
+      settings: { salaryTarget: '$180k-$200k' },
+      marker: '$180k-$200k'
+    },
+    {
+      question: 'Why do you want this role?',
+      category: 'motivation',
+      settings: { whyCompany: 'The infrastructure mission is a strong fit.' },
+      marker: 'infrastructure mission'
+    },
+    {
+      question: 'Tell me about a time you handled a difficult deadline.',
+      category: 'behavioral',
+      settings: { starStories: 'Migrated the deployment pipeline and cut release time by 40%.' },
+      marker: 'cut release time by 40%'
+    }
+  ];
+
+  for (const example of cases) {
+    const request = buildFeatureRequest('answerThis', {
+      transcript: [{ channel: 'you', text: 'unrelated answer' }, { channel: 'them', text: 'unrelated question' }],
+      userText: example.question,
+      settings: example.settings,
+      screenIncluded: false
+    });
+    assert.equal(request.category, example.category);
+    assert.match(request.system, new RegExp(example.marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.deepEqual(request.contextUsed, { screen: false, mic: false, system: false });
+  }
+});

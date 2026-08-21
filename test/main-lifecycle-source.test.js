@@ -72,6 +72,9 @@ test('renderer source lifecycle and main STT/settings/clear paths update the con
   assert.match(rendererSource, /cue\.sourceUpdate\(/);
   assert.match(mainSource, /isOverlaySender\(event, win\)/);
   assert.match(mainSource, /parseSourceUpdatePayload\(payload\)/);
+  assert.match(mainSource, /batchStatusForResult\(res\)/);
+  assert.match(mainSource, /beginGracefulStop\(/);
+  assert.match(mainSource, /finishGracefulStop\(/);
 });
 
 test('renderer consumes one authoritative snapshot stream and explicit window commands', () => {

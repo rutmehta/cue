@@ -18,7 +18,7 @@ const { SessionController } = require('./src/session-controller');
 const { createTrayController } = require('./src/tray-menu');
 const { resolveOverlayBounds, storeBoundsForDisplay } = require('./src/window-state');
 const { isOverlaySender, parseSourceUpdatePayload } = require('./src/source-update');
-const { createGenerationGate } = require('./src/stt-status-gate');
+const { batchStatusForResult, createLocalSttCallbackGate } = require('./src/stt-status-gate');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -75,7 +75,8 @@ let whisperModelManager = null;
 let localWhisperTranscriber = null;
 let activeWhisperModelId = null;
 let llmRequestSequence = 0;
-const localSttStatusGate = createGenerationGate();
+const localSttCallbackGate = createLocalSttCallbackGate();
+let localSttCallbackToken = null;
 
 // -------- streaming STT state --------
 let streamingSTT = { you: null, them: null }; // streaming STT instances per channel
@@ -195,7 +196,8 @@ async function startLocalWhisper(settings) {
   const runtime = getWhisperRuntime();
   if (!runtime.available) throw new Error(runtime.message);
   activeWhisperModelId = model.id;
-  const statusGeneration = localSttStatusGate.next();
+  const callbackToken = localSttCallbackGate.begin();
+  localSttCallbackToken = callbackToken;
   publishSttStatus('loading', {
     detail: `Loading local Whisper model ${model.id}.`,
     patch: { activeEngine: 'whisper', model: model.id }
@@ -219,14 +221,14 @@ async function startLocalWhisper(settings) {
         tinydiarize: model.tinydiarize
       },
       onTranscript: (...args) => {
-        if (localSttStatusGate.isCurrent(statusGeneration)) publishTranscript(...args);
+        if (localSttCallbackGate.allowsTranscript(callbackToken)) publishTranscript(...args);
       },
       onSpeechState: (channel, speaking, durationMs) => {
-        if (!localSttStatusGate.isCurrent(statusGeneration)) return;
+        if (!localSttCallbackGate.allowsStatus(callbackToken)) return;
         send('vad:state', { channel, speaking, durationMs });
       },
       onStatus: (status) => {
-        if (!localSttStatusGate.isCurrent(statusGeneration)) return;
+        if (!localSttCallbackGate.allowsStatus(callbackToken)) return;
         send('stt:status', { provider: 'local', ...status });
         publishSttStatus(status.status, {
           detail: status.message,
@@ -234,7 +236,7 @@ async function startLocalWhisper(settings) {
         });
       },
       onError: (error) => {
-        if (!localSttStatusGate.isCurrent(statusGeneration)) return;
+        if (!localSttCallbackGate.allowsStatus(callbackToken)) return;
         sttDisabled = true;
         console.log('[local-whisper] error', error && error.message);
         send('stt:status', { provider: 'local', status: 'error' });
@@ -249,7 +251,8 @@ async function startLocalWhisper(settings) {
     localWhisperTranscriber = transcriber;
     await transcriber.start();
   } catch (error) {
-    if (localSttStatusGate.isCurrent(statusGeneration)) localSttStatusGate.invalidate();
+    localSttCallbackGate.forceStop(callbackToken);
+    if (localSttCallbackToken === callbackToken) localSttCallbackToken = null;
     if (localWhisperTranscriber === transcriber) localWhisperTranscriber = null;
     activeWhisperModelId = null;
     if (transcriber) await transcriber.forceStop().catch(() => {});
@@ -397,15 +400,11 @@ async function flushChannel(channel) {
       return;
     }
     const res = await stt.transcribe(pcm);
+    const batchStatus = batchStatusForResult(res);
+    if (batchStatus) publishSttStatus(batchStatus.status, batchStatus.details);
     if (res.error) {
       handleSttError(res.error, settings);
       return;
-    }
-    if (res.provider && res.model) {
-      publishSttStatus('ready', {
-        detail: `${res.provider} batch transcription is ready.`,
-        patch: { activeEngine: res.provider, model: res.model }
-      });
     }
     if (res.text && res.text.trim() && res.text.trim().length > 1 && !/^[?!.,;:\-…]+$/.test(res.text.trim())) {
       publishTranscript(channel, res.text);
@@ -609,8 +608,9 @@ async function setCapturing(active) {
   vad.you.reset(); vad.them.reset();
   ringBuffers.you.clear(); ringBuffers.them.clear();
   const stoppingLocalTranscriber = localWhisperTranscriber;
+  const stoppingCallbackToken = localSttCallbackToken;
   localWhisperTranscriber = null;
-  localSttStatusGate.invalidate();
+  localSttCallbackGate.beginGracefulStop(stoppingCallbackToken);
   activeWhisperModelId = null;
   send('capture:state', { active: false, streaming: false, mode: stoppingLocalTranscriber ? 'local' : 'off' });
   if (stoppingLocalTranscriber) {
@@ -621,6 +621,8 @@ async function setCapturing(active) {
       console.log('[local-whisper] stop error', error && error.message);
     }
   }
+  localSttCallbackGate.finishGracefulStop(stoppingCallbackToken);
+  if (localSttCallbackToken === stoppingCallbackToken) localSttCallbackToken = null;
   return false;
 }
 
@@ -639,7 +641,7 @@ async function runFeature(mode, userText) {
     const userBubble = def.userBubble !== null
       ? def.userBubble
       : (mode === 'ask' ? userText : mode === 'answerThis' ? `"${(userText || '').slice(0, 60)}${userText && userText.length > 60 ? '…' : ''}"` : null);
-    const promptPlan = createPromptPlan(mode, transcript);
+    const promptPlan = createPromptPlan(mode, transcript, userText);
     const category = promptPlan.category;
     send('llm:start', { userBubble, small: !!def.small, category });
 
@@ -1058,7 +1060,9 @@ function cancelActiveDownload() {
 }
 
 async function stopLocalEngines() {
-  localSttStatusGate.invalidate();
+  const stoppingCallbackToken = localSttCallbackToken;
+  localSttCallbackGate.forceStop(stoppingCallbackToken);
+  localSttCallbackToken = null;
   const activeTranscriber = localWhisperTranscriber;
   localWhisperTranscriber = null;
   activeWhisperModelId = null;

@@ -220,3 +220,28 @@ test('terminal graph activation failure closes its AudioContext', async () => {
   }), /legacy graph failed/);
   assert.equal(closed, 1);
 });
+
+test('a throwing fallback observer cannot abort legacy graph recovery', async () => {
+  let closed = 0;
+  const processor = { connect() {}, disconnect() {} };
+  const context = {
+    audioWorklet: { addModule: async () => { throw new Error('worklet unavailable'); } },
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => processor,
+    createGain: () => ({ gain: {}, connect() {}, disconnect() {} }),
+    close: async () => { closed += 1; }
+  };
+
+  const graph = await createAudioCaptureGraph({
+    audioContext: context,
+    mediaStream: {},
+    WorkletNode: function WorkletNode() {},
+    onPcm() {},
+    onWorkletFallback() { throw new Error('diagnostic observer failed'); }
+  });
+
+  assert.equal(graph._legacy, true);
+  assert.strictEqual(graph.proc, processor);
+  assert.equal(closed, 0);
+});

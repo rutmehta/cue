@@ -199,3 +199,56 @@ Results:
 Each reviewer line was rechecked against the final diff: source updates have both sender and value boundaries; batch/local STT cannot publish configured-but-unused or shutdown-stale metadata; immediate capture restart and every partial graph failure have explicit ownership cleanup; transcript category/system/user/attribution share one validated bounded plan; and every pre/post-coordinator close branch has a reachable recovery or quit path. The Node suite exits cleanly and no process-wide import side effects were added to the new pure helpers.
 
 As in Round 1, media tests use deterministic fake streams/nodes and do not exercise physical device permission UI. Exact STT metadata is adapter-tested without external network calls. Target-OS smoke testing remains necessary for Electron media graphs and the real tray-less startup/close interval.
+
+## Review Round 3
+
+The scoped re-review of Round 2 identified four terminal-semantics regressions: batch exhaustion left stale ready metadata, graceful local shutdown discarded successfully drained transcripts, Answer This lost category-specific profile context, and a throwing fallback observer escaped capture cleanup. The fixes preserve the established session authority while separating terminal status, transcript, prompt-category, and diagnostic-observer responsibilities.
+
+### Round 3 RED evidence
+
+The combined regression command was run before production changes:
+
+```sh
+node --test test/stt-status-gate.test.js test/prompts.test.js test/renderer-capture-lifecycle.test.js test/main-lifecycle-source.test.js
+```
+
+It exited 1 with **29 passed and 5 failed**:
+
+1. The batch-result probe found no function that maps an exhausted provider chain to `{ phase: "error", activeEngine: null, model: null }`, and the main-source integration probe found no call before the error return.
+2. The local callback probe found no lifecycle capable of suppressing shutdown statuses while keeping transcript delivery valid through a graceful drain. Main still invalidated its single generation before `LocalWhisperTranscriber.stop()`.
+3. The Answer This table expected compensation, motivation, and behavioral categories from three selected questions but received `general` for the first case; category-specific salary/company/STAR material was consequently absent.
+4. The capture graph probe threw `diagnostic observer failed` instead of constructing the valid ScriptProcessor fallback, proving the observer escaped before recovery or terminal context cleanup.
+
+Each behavior then completed an isolated RED/GREEN cycle. The focused batch mapper, graceful callback gate/main wiring, Answer This request plan, and fallback observer probes passed individually before the combined verification run.
+
+### Round 3 GREEN implementation
+
+- `batchStatusForResult()` now maps every attempted batch result to authoritative metadata. Main publishes that update before handling/returning an all-provider error, so the snapshot becomes `error` with the provider's failure detail and clears both `activeEngine` and `model`. Successful attempts retain exact provider/model attribution through the same mapper.
+- Local Whisper uses a callback lifecycle with separate transcript and status permissions. Graceful stop suppresses state/speech/error callbacks immediately but allows pending final transcripts until `stop()` completes its deliberate drain; only then is transcript delivery invalidated. Startup failure and quit-time `forceStop()` invalidate both channels immediately.
+- The prompt plan now validates, trims, and bounds `userText`. For Answer This only, that selected question becomes the category-detection/system-context input while the unrelated transcript window remains empty. Compensation, motivation, and behavioral questions therefore receive the relevant profile material without setting mic/system attribution.
+- AudioWorklet fallback notification is best-effort. A synchronous observer exception is contained, ScriptProcessor recovery still runs, and if recovery itself fails the existing terminal path closes the owned `AudioContext`.
+
+### Round 3 verification
+
+Final verification commands:
+
+```sh
+node --test test/stt-status-gate.test.js test/stt.test.js test/local-whisper-transcriber.test.js test/prompts.test.js test/renderer-capture-lifecycle.test.js test/main-lifecycle-source.test.js test/session-state.test.js
+npm test
+for cue_file in main.js renderer/capture-lifecycle.js src/prompts.js src/stt-status-gate.js test/main-lifecycle-source.test.js test/prompts.test.js test/renderer-capture-lifecycle.test.js test/stt-status-gate.test.js; do node --check "$cue_file" || exit 1; done
+ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron --check main.js
+git diff --check -- . ':(exclude)package-lock.json'
+```
+
+Results:
+
+- Focused impacted tests: **47 passed, 0 failed**.
+- Full suite: **207 passed, 0 failed, 0 cancelled/skipped/todo**; the ordinary process exited normally without retained timer/process handles.
+- Node syntax checks, Electron's Node-runtime parse of `main.js`, and the tracked whitespace check all exited 0.
+- The user-modified `package-lock.json` and untracked `index.cjs`, `index.js`, and `main-CLCIkAdW.js` remain outside the commit.
+
+### Round 3 self-review and concerns
+
+The final paths distinguish failure from configuration, graceful drain from forced cancellation, selected-question category input from transcript attribution, and diagnostics from graph ownership. No new Electron or import-time side effects were introduced; both new STT decisions remain pure and deterministically tested.
+
+The local drain regression is covered by the pure callback lifecycle plus the existing real `LocalWhisperTranscriber` drain tests, using an injected in-memory session rather than a Whisper process. Audio graph recovery likewise uses deterministic nodes. Physical media devices, native Whisper shutdown, and OS permission UI remain release-smoke concerns.
