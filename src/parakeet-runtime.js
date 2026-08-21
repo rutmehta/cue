@@ -210,7 +210,6 @@ async function inspectModel(candidates, fs) {
     }
   }
   if (missingFiles.length > 0) {
-    model.missingFiles = missingFiles;
     return { model, error: incompleteModelError(model.path, missingFiles) };
   }
 
@@ -218,8 +217,8 @@ async function inspectModel(candidates, fs) {
     model.fingerprint = await fingerprintFiles(paths, fs);
     return { model, error: null };
   } catch {
-    model.missingFiles = [...PARAKEET_REQUIRED_FILES];
-    return { model, error: incompleteModelError(model.path, model.missingFiles) };
+    const missingFiles = [...PARAKEET_REQUIRED_FILES];
+    return { model, error: incompleteModelError(model.path, missingFiles) };
   }
 }
 

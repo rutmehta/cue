@@ -101,6 +101,8 @@ test('finds the universal OpenWhispr runtime and cached model on this path shape
   assert.equal(result.model.path, '/Users/test/.cache/openwhispr/parakeet-models/parakeet-tdt-0.6b-v3');
   assert.equal(result.model.source, 'openwhispr');
   assert.equal(result.healthy, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
+  assert.deepEqual(structuredClone(result), result);
 });
 
 test('uses metadata in a deterministic model fingerprint', async () => {
@@ -166,7 +168,7 @@ test('reports invalid runtime and incomplete model assets without throwing', asy
   });
   assert.equal(result.healthy, false);
   assert.deepEqual(result.errors.map((error) => error.code), ['runtime_not_executable', 'model_incomplete']);
-  assert.deepEqual(result.model.missingFiles, ['decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt']);
+  assert.deepEqual(result.errors[1].details.missingFiles, ['decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt']);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
   assert.deepEqual(structuredClone(result), result);
 });

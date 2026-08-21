@@ -197,7 +197,7 @@ test('rejects reserved detail keys and accessors without invoking getters', () =
     enumerable: true,
     get() { calls += 1; return []; }
   });
-  assert.throws(() => normalizeEngineInspection(accessorInspection), /errors.*array/i);
+  assert.throws(() => normalizeEngineInspection(accessorInspection), /errors.*array|schema/i);
   assert.equal(calls, 0);
 });
 
@@ -214,6 +214,94 @@ test('bounds deep, wide, and numerous detail values with controlled errors', () 
       () => normalizeEngineInspection({ ...assets, errors: [errorFor(details)] }),
       /details.*(plain|limit)/i
     );
+  }
+});
+
+test('clones the complete documented inspection schema without retaining input references', () => {
+  const input = {
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/parakeet', source: 'bundle', version: '1.2.3' },
+    model: { path: '/models/parakeet', source: 'cache', fingerprint: 'abc123' },
+    errors: [{
+      code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.',
+      details: { missingFiles: ['tokens.txt'] }
+    }]
+  };
+  const inspection = normalizeEngineInspection(input);
+  assert.notStrictEqual(inspection, input);
+  assert.notStrictEqual(inspection.runtime, input.runtime);
+  assert.notStrictEqual(inspection.model, input.model);
+  assert.notStrictEqual(inspection.errors, input.errors);
+  assert.notStrictEqual(inspection.errors[0].details, input.errors[0].details);
+  input.errors[0].details.missingFiles.push('joiner.int8.onnx');
+  assert.deepEqual(inspection.errors[0].details, { missingFiles: ['tokens.txt'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(inspection)), inspection);
+  assert.deepEqual(structuredClone(inspection), inspection);
+});
+
+test('rejects unknown, undefined, and accessor fields across the inspection schema', () => {
+  const complete = {
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/p' }, model: { path: '/models/p' }, errors: []
+  };
+  for (const value of [
+    { ...complete, unexpected: true },
+    { ...complete, runtime: { path: '/bin/p', unexpected: undefined } },
+    { ...complete, model: { path: '/models/p', nested: { arbitrary: true } } },
+    { ...complete, id: undefined },
+    { ...complete, runtime: undefined },
+    { ...complete, model: undefined }
+  ]) {
+    assert.throws(() => normalizeEngineInspection(value), /inspection.*(field|schema)|runtime|model/i);
+    assert.equal(isHealthyInspection(value), false);
+  }
+
+  let reads = 0;
+  const accessorTop = { ...complete };
+  Object.defineProperty(accessorTop, 'runtime', { enumerable: true, get() { reads += 1; return complete.runtime; } });
+  const accessorRuntime = { ...complete, runtime: {} };
+  Object.defineProperty(accessorRuntime.runtime, 'path', { enumerable: true, get() { reads += 1; return '/bin/p'; } });
+  const accessorModel = { ...complete, model: {} };
+  Object.defineProperty(accessorModel.model, 'fingerprint', { enumerable: true, get() { reads += 1; return 'abc'; } });
+  for (const value of [accessorTop, accessorRuntime, accessorModel]) {
+    assert.throws(() => normalizeEngineInspection(value), /inspection|runtime|model/i);
+  }
+  assert.equal(reads, 0);
+});
+
+test('bounds inspection and detail text before aggregate overflow', () => {
+  const base = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' }, errors: [] };
+  const megabytes = 'x'.repeat(4 * 1024 * 1024);
+  const twoMegabytes = 'x'.repeat(2 * 1024 * 1024);
+  const oversizedKey = { [megabytes]: 'value' };
+  const aggregateDetails = { values: ['x'.repeat(60000), 'y'.repeat(60000), 'z'.repeat(60000)] };
+  for (const value of [
+    { ...base, id: megabytes },
+    { ...base, errors: [{ code: 'model_incomplete', message: twoMegabytes, action: 'Repair.' }] },
+    { ...base, errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: oversizedKey }] },
+    { ...base, errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: aggregateDetails }] }
+  ]) {
+    assert.throws(() => normalizeEngineInspection(value), /limit|length|inspection|details/i);
+    assert.equal(isHealthyInspection(value), false);
+  }
+});
+
+test('converts hostile proxy reflection failures into controlled TypeErrors', () => {
+  const base = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' }, errors: [] };
+  const hostile = (target, trap) => new Proxy(target, { [trap]() { throw new Error(`raw ${trap}`); } });
+  const cases = [
+    hostile({}, 'getPrototypeOf'),
+    { ...base, runtime: hostile({}, 'ownKeys') },
+    { ...base, model: hostile({ path: '/models/p' }, 'getOwnPropertyDescriptor') },
+    { ...base, errors: hostile([], 'ownKeys') },
+    { ...base, errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: hostile({}, 'ownKeys') }] }
+  ];
+  for (const value of cases) {
+    assert.throws(
+      () => normalizeEngineInspection(value),
+      (error) => error instanceof TypeError && !/raw (getPrototypeOf|ownKeys|getOwnPropertyDescriptor)/.test(error.message)
+    );
+    assert.equal(isHealthyInspection(value), false);
   }
 });
 

@@ -45,3 +45,12 @@
 - Added regression coverage for no input mutation, proxy/getter safety, exact JSON/structured-clone round trips, actual Parakeet `missingFiles` details, and all prior unsafe cases.
 - RED verification: clone-safety regressions failed before the bounded normalized copy was implemented.
 - Post-review verification: 19 focused tests and 247 full-suite tests pass.
+
+## Review Round 4
+
+- Replaced whole-inspection spreading/property reads with an explicit descriptor-based schema for documented top-level, runtime, model, and error fields. Unknown runtime/model/top-level metadata and accessors are rejected without executing getters.
+- Normalized every accepted inspection into fresh plain output; `model_incomplete` file names now live only in structured error details, not as an undocumented model field.
+- Added per-field and aggregate text limits covering IDs, paths, metadata, error text, detail keys, and detail strings.
+- Wrapped reflection and proxy failures as controlled `TypeError`s, retaining no proxy or caller-owned references in successful results.
+- RED verification: whole-inspection safety, text-budget, and hostile-proxy tests failed before schema bounding was implemented.
+- Post-review verification: 23 focused tests and 251 full-suite tests pass.
