@@ -263,6 +263,64 @@ test('times out a request with injected timers and clears its timer exactly once
   assert.deepEqual(cleared, [timers[0]]);
 });
 
+test('repeated timeouts retain capacity until lower-level callbacks terminate the work', async () => {
+  const timers = [];
+  const cleared = [];
+  const fixture = harness({
+    maxQueuePerChannel: 3,
+    transcriptionTimeoutMs: 50,
+    setTimer: (callback, milliseconds) => {
+      const timer = { callback, milliseconds };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { cleared.push(timer); }
+  });
+  const engine = new WhisperEngine(fixture.options);
+  await engine.start();
+  const callbacks = fixture.controls.options[0];
+  const transcriber = fixture.controls.transcribers[0];
+
+  const first = engine.transcribe(segment('you', 'one'));
+  const firstRejected = assert.rejects(first, (error) => error.code === 'transcription_timeout');
+  await new Promise(setImmediate);
+  const firstPush = transcriber.pushes[0];
+  timers[0].callback();
+  await firstRejected;
+
+  const second = engine.transcribe(segment('you', 'two'));
+  const third = engine.transcribe(segment('you', 'three'));
+  await assert.rejects(engine.transcribe(segment('you', 'four')), (error) => error.code === 'queue_full');
+  await new Promise(setImmediate);
+  assert.equal(transcriber.pushes.length, 1);
+  assert.equal(timers.length, 1);
+
+  callbacks.onTranscript('you', 'late first', firstPush.requestId);
+  await new Promise(setImmediate);
+  assert.equal(transcriber.pushes.length, 2);
+  const secondPush = transcriber.pushes[1];
+  const secondRejected = assert.rejects(second, (error) => error.code === 'transcription_timeout');
+  timers[1].callback();
+  await secondRejected;
+
+  const fourth = engine.transcribe(segment('you', 'four'));
+  await assert.rejects(engine.transcribe(segment('you', 'five')), (error) => error.code === 'queue_full');
+  await new Promise(setImmediate);
+  assert.equal(transcriber.pushes.length, 2);
+  assert.equal(timers.length, 2);
+
+  callbacks.onError(new Error('late second'), 'you', secondPush.requestId);
+  await new Promise(setImmediate);
+  assert.equal(transcriber.pushes.length, 3);
+  const thirdRejected = assert.rejects(third, (error) => error.code === 'stt_stopped');
+  const fourthRejected = assert.rejects(fourth, (error) => error.code === 'stt_stopped');
+  await engine.stop();
+  await thirdRejected;
+  await fourthRejected;
+
+  assert.equal(cleared.filter((timer) => timers.slice(0, 2).includes(timer)).length, 2);
+});
+
 test('isolates status observer failures and returns immutable transcript results', async () => {
   const reported = [];
   const statuses = [];
@@ -355,6 +413,41 @@ test('stop force-stops a startup generation without waiting for its start promis
   assert.equal(fixture.controls.transcribers[0].forceStopCalls, 1);
   startGate.resolve();
   await assert.rejects(starting, (error) => error.code === 'stt_stopped');
+});
+
+test('a fresh start after stopping does not join a cancellation-ignoring stale start', async () => {
+  const staleStartGate = deferred();
+  const fixture = harness({
+    transcriberFactory: (options) => {
+      fixture.controls.options.push(options);
+      const index = fixture.controls.transcribers.length;
+      const transcriber = {
+        forceStopCalls: 0,
+        async start() { if (index === 0) await staleStartGate.promise; },
+        push() {},
+        async stop() {},
+        async forceStop() { this.forceStopCalls += 1; }
+      };
+      fixture.controls.transcribers.push(transcriber);
+      return transcriber;
+    }
+  });
+  const engine = new WhisperEngine(fixture.options);
+  const staleStart = engine.start();
+  const staleRejected = assert.rejects(staleStart, (error) => error.code === 'stt_stopped');
+  await new Promise(setImmediate);
+  await engine.stop();
+
+  const freshStart = engine.start();
+  assert.notEqual(freshStart, staleStart);
+  await freshStart;
+  assert.equal(fixture.controls.transcribers.length, 2);
+
+  staleStartGate.resolve();
+  await staleRejected;
+  await new Promise(setImmediate);
+  assert.equal(engine.running, true);
+  assert.equal(fixture.controls.transcribers[0].forceStopCalls, 2);
 });
 
 test('stop has an injected bound when the transcriber ignores shutdown', async () => {

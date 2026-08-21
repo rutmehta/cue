@@ -55,7 +55,10 @@ function validCacheFor(engines, overrides = {}) {
   return {
     cacheKey: buildBenchmarkCacheKey(values, { platform: 'testos', arch: 'testarch' }),
     winner: 'parakeet',
-    elapsedMs: { parakeet: 10, whisper: 20 },
+    elapsedMs: {
+      parakeet: { status: 'valid', value: 10 },
+      whisper: { status: 'valid', value: 20 }
+    },
     recordedAt: 4000,
     ...overrides
   };
@@ -145,7 +148,10 @@ test('a valid cache starts its winner without benchmarking', async () => {
     loadBenchmark: () => ({
       cacheKey,
       winner: 'whisper',
-      elapsedMs: { parakeet: 20, whisper: 10 },
+      elapsedMs: {
+        parakeet: { status: 'valid', value: 20 },
+        whisper: { status: 'valid', value: 10 }
+      },
       recordedAt: 4000
     })
   });
@@ -183,8 +189,118 @@ test('an uncached Auto race resolves the first valid result then records both ti
   assert.equal(manager.getStatus().activeEngine, 'parakeet');
   await manager.whenBenchmarkSettled();
   assert.equal(saved.length, 1);
-  assert.deepEqual(saved[0].elapsedMs, { parakeet: 70, whisper: 30 });
+  assert.deepEqual(saved[0].elapsedMs, {
+    parakeet: { status: 'valid', value: 70 },
+    whisper: { status: 'invalid', value: 30 }
+  });
   assert.equal(saved[0].winner, 'parakeet');
+});
+
+test('the first valid benchmark response serves the user while the faster elapsed result is cached', async () => {
+  const parakeetResult = deferred();
+  const whisperResult = deferred();
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper');
+  parakeet.transcribe = async () => parakeetResult.promise;
+  whisper.transcribe = async () => whisperResult.promise;
+  const saved = [];
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper],
+    platform: 'testos', architecture: 'testarch', now: () => 5000,
+    loadBenchmark: () => null,
+    saveBenchmark: async (record) => { saved.push(record); }
+  });
+  await manager.start({ requestedEngine: 'auto' });
+
+  const pending = manager.transcribe(segment());
+  parakeetResult.resolve({ text: 'first response', elapsedMs: 90 });
+  assert.equal((await pending).engine, 'parakeet');
+  assert.equal(manager.getStatus().activeEngine, 'parakeet');
+  whisperResult.resolve({ text: 'faster inference', elapsedMs: 15 });
+  await manager.whenBenchmarkSettled();
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].winner, 'whisper');
+  assert.deepEqual(saved[0].elapsedMs, {
+    parakeet: { status: 'valid', value: 90 },
+    whisper: { status: 'valid', value: 15 }
+  });
+  assert.equal(manager.getStatus().activeEngine, 'parakeet');
+});
+
+test('equal valid benchmark timings choose Parakeet deterministically for the cache', async () => {
+  const saved = [];
+  const manager = new LocalSttManager({
+    engines: [fakeEngine('parakeet', { text: 'one', elapsedMs: 20 }), fakeEngine('whisper', { text: 'two', elapsedMs: 20 })],
+    loadBenchmark: () => null,
+    saveBenchmark: async (record) => { saved.push(record); }
+  });
+
+  await manager.start({ requestedEngine: 'auto' });
+  await manager.transcribe(segment());
+  await manager.whenBenchmarkSettled();
+
+  assert.equal(saved[0].winner, 'parakeet');
+});
+
+test('both invalid or failed benchmark results reject coherently without writing a cache', async () => {
+  const parakeet = fakeEngine('parakeet', { text: 'Thank you for watching.', elapsedMs: 3 });
+  const whisper = fakeEngine('whisper');
+  whisper.transcribe = async () => { throw new Error('inference failed'); };
+  const saved = [];
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper], loadBenchmark: () => null,
+    saveBenchmark: async (record) => { saved.push(record); }
+  });
+  await manager.start({ requestedEngine: 'auto' });
+
+  await assert.rejects(
+    manager.transcribe(segment()),
+    (error) => error.code === 'transcription_failed'
+  );
+  await new Promise(setImmediate);
+
+  assert.deepEqual(saved, []);
+  assert.equal(manager.getStatus().activeEngine, null);
+});
+
+test('simultaneous channels share the initial Auto benchmark before transcribing later work', async () => {
+  const parakeetBenchmark = deferred();
+  const whisperBenchmark = deferred();
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper');
+  parakeet.transcribe = async () => {
+    parakeet.calls.transcribe += 1;
+    return parakeet.calls.transcribe === 1
+      ? parakeetBenchmark.promise
+      : { text: 'system follows winner', elapsedMs: 11 };
+  };
+  whisper.transcribe = async () => {
+    whisper.calls.transcribe += 1;
+    return whisperBenchmark.promise;
+  };
+  const manager = new LocalSttManager({ engines: [parakeet, whisper], loadBenchmark: () => null });
+  await manager.start({ requestedEngine: 'auto' });
+
+  const mic = manager.transcribe(segment());
+  const system = manager.transcribe({ ...segment(), channel: 'them' }).then(
+    (value) => ({ value }),
+    (error) => ({ error })
+  );
+  await new Promise(setImmediate);
+  assert.equal(parakeet.calls.transcribe, 1);
+  assert.equal(whisper.calls.transcribe, 1);
+
+  parakeetBenchmark.resolve({ text: 'mic benchmark', elapsedMs: 20 });
+  const micResult = await mic;
+  const systemResult = await system;
+  whisperBenchmark.resolve({ text: 'slow whisper', elapsedMs: 40 });
+  await manager.whenBenchmarkSettled();
+
+  assert.equal(micResult.text, 'mic benchmark');
+  assert.equal(systemResult.error, undefined);
+  assert.equal(systemResult.value.text, 'system follows winner');
+  assert.equal(parakeet.calls.transcribe, 2);
 });
 
 test('the first benchmark copies and caps PCM to fifteen seconds without mutating the segment', async () => {
@@ -239,6 +355,48 @@ test('Auto retries one uncommitted segment on the other healthy local engine', a
   assert.equal(whisper.calls.transcribe, 1);
   assert.equal(manager.getStatus().activeEngine, 'whisper');
   assert.match(manager.getStatus().detail, /Parakeet failed.*Whisper/i);
+});
+
+test('a failed runtime fallback never publishes an alternate as active before it starts', async () => {
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper');
+  parakeet.transcribe = async () => { throw new Error('primary exited'); };
+  whisper.start = async () => { whisper.calls.start += 1; throw new Error('alternate failed to load'); };
+  const statuses = [];
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper],
+    platform: 'testos', architecture: 'testarch', now: () => 5000,
+    loadBenchmark: () => validCacheFor([parakeet, whisper])
+  });
+  manager.onStatus((status) => statuses.push(status));
+  await manager.start({ requestedEngine: 'auto' });
+
+  await assert.rejects(manager.transcribe(segment()), /alternate failed to load/);
+
+  assert.deepEqual(statuses.slice(-3).map(({ phase, activeEngine }) => ({ phase, activeEngine })), [
+    { phase: 'transcribing', activeEngine: 'parakeet' },
+    { phase: 'fallback', activeEngine: null },
+    { phase: 'error', activeEngine: null }
+  ]);
+  assert.equal(manager.getStatus().activeEngine, null);
+});
+
+test('an alternate transcription failure clears the active engine in the final error snapshot', async () => {
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper');
+  parakeet.transcribe = async () => { throw new Error('primary exited'); };
+  whisper.transcribe = async () => { throw new Error('alternate inference failed'); };
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper],
+    platform: 'testos', architecture: 'testarch', now: () => 5000,
+    loadBenchmark: () => validCacheFor([parakeet, whisper])
+  });
+  await manager.start({ requestedEngine: 'auto' });
+
+  await assert.rejects(manager.transcribe(segment()), /alternate inference failed/);
+
+  assert.equal(manager.getStatus().phase, 'error');
+  assert.equal(manager.getStatus().activeEngine, null);
 });
 
 test('explicit selection never retries on the other engine', async () => {
@@ -301,7 +459,12 @@ test('a cache is ignored when current runtime or model identity metadata is inco
     engines: [parakeet, whisper], platform: 'testos', architecture: 'testarch', now: () => 5000,
     loadBenchmark: () => ({
       cacheKey: buildBenchmarkCacheKey(values, { platform: 'testos', arch: 'testarch' }),
-      winner: 'parakeet', elapsedMs: { parakeet: 1, whisper: 2 }, recordedAt: 4000
+      winner: 'parakeet',
+      elapsedMs: {
+        parakeet: { status: 'valid', value: 1 },
+        whisper: { status: 'valid', value: 2 }
+      },
+      recordedAt: 4000
     })
   });
 
@@ -327,6 +490,32 @@ test('cached winner startup failure falls back by starting the healthy alternate
   assert.equal(whisper.calls.start, 1);
 });
 
+test('cached winner and alternate startup failures end with no falsely active engine', async () => {
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper');
+  parakeet.start = async () => { parakeet.calls.start += 1; throw new Error('winner load failed'); };
+  whisper.start = async () => { whisper.calls.start += 1; throw new Error('alternate load failed'); };
+  const statuses = [];
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper], platform: 'testos', architecture: 'testarch', now: () => 5000,
+    loadBenchmark: () => validCacheFor([parakeet, whisper])
+  });
+  manager.onStatus((status) => statuses.push(status));
+
+  await assert.rejects(manager.start({ requestedEngine: 'auto' }), /alternate load failed/);
+
+  assert.deepEqual(statuses.map(({ phase, activeEngine }) => ({ phase, activeEngine })), [
+    { phase: 'probing', activeEngine: null },
+    { phase: 'loading', activeEngine: 'parakeet' },
+    { phase: 'fallback', activeEngine: null },
+    { phase: 'error', activeEngine: null }
+  ]);
+  assert.deepEqual(manager.getStatus(), {
+    phase: 'error', requestedEngine: 'auto', activeEngine: null,
+    detail: 'Whisper failed to start: alternate load failed'
+  });
+});
+
 test('bounds a benchmark loser to fifteen seconds after the winner', async () => {
   const parakeet = fakeEngine('parakeet');
   const whisper = fakeEngine('whisper');
@@ -337,7 +526,8 @@ test('bounds a benchmark loser to fifteen seconds after the winner', async () =>
   const cleared = [];
   const saved = [];
   const manager = new LocalSttManager({
-    engines: [parakeet, whisper], loadBenchmark: () => null,
+    engines: [parakeet, whisper], platform: 'testos', architecture: 'testarch', now: () => 5000,
+    loadBenchmark: () => null,
     setTimer: (callback, milliseconds) => { timer = { callback, milliseconds }; return timer; },
     clearTimer: (handle) => { cleared.push(handle); },
     saveBenchmark: async (record) => { saved.push(record); }
@@ -350,8 +540,49 @@ test('bounds a benchmark loser to fifteen seconds after the winner', async () =>
   timer.callback();
   await manager.whenBenchmarkSettled();
   assert.equal(saved.length, 1);
-  assert.deepEqual(saved[0].elapsedMs, { parakeet: 10, whisper: null });
+  assert.deepEqual(saved[0].elapsedMs, {
+    parakeet: { status: 'valid', value: 10 },
+    whisper: { status: 'timeout', value: null }
+  });
   assert.equal(cleared.length, 1);
+
+  const nextParakeet = fakeEngine('parakeet');
+  const nextWhisper = fakeEngine('whisper');
+  const next = new LocalSttManager({
+    engines: [nextParakeet, nextWhisper], platform: 'testos', architecture: 'testarch', now: () => 5001,
+    loadBenchmark: () => saved[0]
+  });
+  await next.start({ requestedEngine: 'auto' });
+  assert.equal(next.getStatus().activeEngine, 'parakeet');
+  assert.equal(nextParakeet.calls.start, 1);
+  assert.equal(nextWhisper.calls.start, 0);
+});
+
+test('a valid winner with an errored loser writes and reloads a strict tagged cache record', async () => {
+  const parakeet = fakeEngine('parakeet', { text: 'usable', elapsedMs: 25 });
+  const whisper = fakeEngine('whisper');
+  whisper.transcribe = async () => { throw new Error('decoder exited'); };
+  const saved = [];
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper], platform: 'testos', architecture: 'testarch', now: () => 5000,
+    loadBenchmark: () => null, saveBenchmark: async (record) => { saved.push(record); }
+  });
+  await manager.start({ requestedEngine: 'auto' });
+  assert.equal((await manager.transcribe(segment())).engine, 'parakeet');
+  await manager.whenBenchmarkSettled();
+
+  assert.deepEqual(saved[0].elapsedMs, {
+    parakeet: { status: 'valid', value: 25 },
+    whisper: { status: 'error', value: 0 }
+  });
+  const nextParakeet = fakeEngine('parakeet');
+  const nextWhisper = fakeEngine('whisper');
+  const next = new LocalSttManager({
+    engines: [nextParakeet, nextWhisper], platform: 'testos', architecture: 'testarch', now: () => 5001,
+    loadBenchmark: () => saved[0]
+  });
+  await next.start({ requestedEngine: 'auto' });
+  assert.equal(next.getStatus().activeEngine, 'parakeet');
 });
 
 test('publishes immutable serializable lifecycle snapshots despite observer failures', async () => {
@@ -451,6 +682,34 @@ test('stop rejects active work once and invalidates late benchmark results and c
   assert.equal(whisper.calls.stop, 1);
 });
 
+test('an abandoned old-generation transcription cannot block fresh same-channel work', async () => {
+  const stale = deferred();
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper', { healthy: false });
+  parakeet.transcribe = async () => {
+    parakeet.calls.transcribe += 1;
+    return parakeet.calls.transcribe === 1
+      ? stale.promise
+      : { text: 'fresh same channel', elapsedMs: 2 };
+  };
+  const manager = new LocalSttManager({ engines: [parakeet, whisper] });
+  await manager.start({ requestedEngine: 'parakeet' });
+  const oldWork = manager.transcribe(segment());
+  const oldRejected = assert.rejects(oldWork, (error) => error.code === 'stt_stopped');
+  await new Promise(setImmediate);
+  await manager.stop();
+  await oldRejected;
+  await manager.start({ requestedEngine: 'parakeet' });
+
+  const freshOutcome = await Promise.race([
+    manager.transcribe(segment()).then((value) => value.text),
+    new Promise((resolve) => setImmediate(() => resolve('blocked')))
+  ]);
+
+  assert.equal(freshOutcome, 'fresh same channel');
+  assert.equal(parakeet.calls.transcribe, 2);
+});
+
 test('stop does not wait for an inspection that ignores cancellation', async () => {
   const parakeet = fakeEngine('parakeet');
   const whisper = fakeEngine('whisper', { healthy: false });
@@ -468,4 +727,95 @@ test('stop does not wait for an inspection that ignores cancellation', async () 
   assert.equal(outcome, 'completed');
   inspectionGate.resolve();
   await assert.rejects(starting, (error) => error.code === 'stt_stopped');
+});
+
+test('stop during inspection stays off and a restart does not join the stale start promise', async () => {
+  const staleInspection = deferred();
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper', { healthy: false });
+  parakeet.inspect = async () => {
+    parakeet.calls.inspect += 1;
+    return parakeet.calls.inspect === 1 ? staleInspection.promise : inspection('parakeet');
+  };
+  const phases = [];
+  const manager = new LocalSttManager({ engines: [parakeet, whisper] });
+  manager.onStatus((status) => phases.push(status.phase));
+  const staleStart = manager.start({ requestedEngine: 'parakeet' });
+  const staleRejected = assert.rejects(staleStart, (error) => error.code === 'stt_stopped');
+  await new Promise(setImmediate);
+  await manager.stop();
+  const offIndex = phases.lastIndexOf('off');
+
+  const freshStart = manager.start({ requestedEngine: 'parakeet' });
+  assert.notEqual(freshStart, staleStart);
+  await freshStart;
+  staleInspection.resolve(inspection('parakeet'));
+  await staleRejected;
+  await new Promise(setImmediate);
+
+  assert.equal(manager.getStatus().phase, 'ready');
+  assert.deepEqual(phases.slice(offIndex), ['off', 'probing', 'loading', 'ready']);
+});
+
+test('stop owns a cancellation-ignoring engine start and bounds its late cleanup', async () => {
+  const startGate = deferred();
+  const timers = [];
+  const cleared = [];
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper', { healthy: false });
+  parakeet.start = async () => { parakeet.calls.start += 1; await startGate.promise; };
+  parakeet.stop = async () => { parakeet.calls.stop += 1; return new Promise(() => {}); };
+  const manager = new LocalSttManager({
+    engines: [parakeet, whisper], stopTimeoutMs: 123,
+    setTimer: (callback, milliseconds) => {
+      const timer = { callback, milliseconds };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { cleared.push(timer); }
+  });
+  const starting = manager.start({ requestedEngine: 'parakeet' });
+  const startRejected = assert.rejects(starting, (error) => error.code === 'stt_stopped');
+  await new Promise(setImmediate);
+  const stopping = manager.stop();
+  await new Promise(setImmediate);
+
+  assert.equal(parakeet.calls.stop, 1);
+  assert.equal(timers[0].milliseconds, 123);
+  timers[0].callback();
+  await stopping;
+  assert.equal(manager.getStatus().phase, 'off');
+
+  startGate.resolve();
+  await startRejected;
+  await new Promise(setImmediate);
+  assert.equal(parakeet.calls.stop, 2);
+  assert.equal(timers[1].milliseconds, 123);
+  timers[1].callback();
+  await new Promise(setImmediate);
+  assert.deepEqual(cleared, timers);
+  assert.equal(manager.getStatus().phase, 'off');
+});
+
+test('the default transcript validator rejects known hallucinations but accepts speech', async () => {
+  const invalid = new LocalSttManager({
+    engines: [
+      fakeEngine('parakeet', { text: 'Thank you for watching.', elapsedMs: 1 }),
+      fakeEngine('whisper', { text: 'Okay.', elapsedMs: 2 })
+    ],
+    loadBenchmark: () => null
+  });
+  await invalid.start({ requestedEngine: 'auto' });
+  await assert.rejects(invalid.transcribe(segment()), (error) => error.code === 'transcription_failed');
+
+  const valid = new LocalSttManager({
+    engines: [
+      fakeEngine('parakeet', { text: 'Deploy the service now.', elapsedMs: 1 }),
+      fakeEngine('whisper', { text: 'Ship the release.', elapsedMs: 2 })
+    ],
+    loadBenchmark: () => null
+  });
+  await valid.start({ requestedEngine: 'auto' });
+  assert.equal((await valid.transcribe(segment())).text, 'Deploy the service now.');
+  await valid.whenBenchmarkSettled();
 });

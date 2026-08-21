@@ -102,7 +102,7 @@ class LocalWhisperTranscriber {
     const job = queue.tail.then(async () => {
       if (queue.abandoned || generation !== this.jobGeneration) return;
       const text = await this.session.transcribe(pcm);
-      if (!queue.abandoned && generation === this.jobGeneration && text) {
+      if (!queue.abandoned && generation === this.jobGeneration && (requestId !== undefined || text)) {
         this.onTranscript(channel, text, requestId);
       }
     });

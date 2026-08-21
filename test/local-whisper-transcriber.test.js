@@ -230,6 +230,27 @@ test('a direct engine request preserves its id through transcript callbacks', as
   assert.deepEqual(transcripts, [{ channel: 'you', text: 'direct', requestId: 'request-1' }]);
 });
 
+test('a direct engine request reports an empty result so its caller can fall back promptly', async () => {
+  const transcripts = [];
+  const transcriber = new LocalWhisperTranscriber({
+    sessionOptions: {},
+    sessionFactory: () => ({
+      async start() {},
+      async transcribe() { return ''; },
+      abortInferences() {},
+      async stop() {}
+    }),
+    segmenterFactory,
+    onTranscript: (channel, text, requestId) => transcripts.push({ channel, text, requestId })
+  });
+
+  await transcriber.start();
+  transcriber.push('you', Buffer.from('direct'), 'request-empty');
+  await transcriber.queueTail;
+
+  assert.deepEqual(transcripts, [{ channel: 'you', text: '', requestId: 'request-empty' }]);
+});
+
 test('a direct engine failure preserves its channel and request id', async () => {
   const errors = [];
   const transcriber = new LocalWhisperTranscriber({

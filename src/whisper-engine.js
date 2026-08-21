@@ -226,7 +226,7 @@ class WhisperEngine {
     } catch (error) {
       return Promise.reject(error);
     }
-    const channelCount = Array.from(this.requests).filter((request) => request.channel === copy.channel && !request.settled).length;
+    const channelCount = Array.from(this.requests).filter((request) => request.channel === copy.channel && !request.terminalSettled).length;
     if (channelCount >= this.maxQueuePerChannel) {
       return Promise.reject(new LocalSttError(
         'queue_full',
@@ -243,7 +243,9 @@ class WhisperEngine {
       pcm16: copy.pcm16,
       generation: this.generation,
       completion,
-      settled: false,
+      terminal: deferred(),
+      publicSettled: false,
+      terminalSettled: false,
       timer: null,
       startedAt: null
     };
@@ -259,15 +261,15 @@ class WhisperEngine {
   }
 
   _beginRequest(request) {
-    if (request.settled) return request.completion.promise.catch(() => {});
+    if (request.terminalSettled) return request.terminal.promise;
     if (!this.running || request.generation !== this.generation || !this.transcriber) {
-      this._settleRequest(request, 'reject', stoppedError());
-      return request.completion.promise.catch(() => {});
+      this._finishRequest(request, 'reject', stoppedError());
+      return request.terminal.promise;
     }
     request.startedAt = this.now();
     this.pendingById.set(request.id, request);
     request.timer = this.setTimer(() => {
-      this._settleRequest(request, 'reject', new LocalSttError(
+      this._settlePublicRequest(request, 'reject', new LocalSttError(
         'transcription_timeout',
         'Local Whisper transcription timed out.',
         'Retry the segment or restart Local Whisper.'
@@ -276,19 +278,20 @@ class WhisperEngine {
     try {
       this.transcriber.push(request.channel, request.pcm16, request.id);
     } catch (error) {
-      this._settleRequest(request, 'reject', error);
+      this._finishRequest(request, 'reject', error);
     }
-    return request.completion.promise;
+    return request.terminal.promise;
   }
 
   stop() {
     if (this.stopPromise) return this.stopPromise;
     this.running = false;
     this.generation += 1;
-    for (const request of this.requests) this._settleRequest(request, 'reject', stoppedError());
+    for (const request of this.requests) this._finishRequest(request, 'reject', stoppedError());
     const transcriber = this.transcriber;
     this.transcriber = null;
     const wasStarting = Boolean(this.startPromise);
+    this.startPromise = null;
     const operation = Promise.resolve().then(async () => {
       if (transcriber) await this._boundedTranscriberStop(transcriber, wasStarting);
     });
@@ -321,7 +324,7 @@ class WhisperEngine {
     const request = this.pendingById.get(requestId);
     if (!request || request.channel !== channel || request.generation !== generation) return;
     const elapsedMs = Math.max(0, this.now() - request.startedAt);
-    this._settleRequest(request, 'resolve', Object.freeze({ text: String(text || '').trim(), elapsedMs }));
+    this._finishRequest(request, 'resolve', Object.freeze({ text: String(text || '').trim(), elapsedMs }));
   }
 
   _onTranscriberStatus(generation, status) {
@@ -343,11 +346,11 @@ class WhisperEngine {
     if (generation !== this.generation || !this.running) return;
     const request = this.pendingById.get(requestId);
     if (request && (!channel || request.channel === channel)) {
-      this._settleRequest(request, 'reject', error);
+      this._finishRequest(request, 'reject', error);
       return;
     }
     if (!requestId) {
-      for (const active of this.requests) this._settleRequest(active, 'reject', error);
+      for (const active of this.requests) this._finishRequest(active, 'reject', error);
     }
   }
 
@@ -368,15 +371,22 @@ class WhisperEngine {
     return { channel: segment.channel, pcm16: Buffer.from(source), sampleRate: segment.sampleRate };
   }
 
-  _settleRequest(request, method, value) {
-    if (request.settled) return;
-    request.settled = true;
+  _settlePublicRequest(request, method, value) {
+    if (request.publicSettled) return;
+    request.publicSettled = true;
     if (request.timer !== null) {
       this.clearTimer(request.timer);
       request.timer = null;
     }
-    this.pendingById.delete(request.id);
     request.completion[method](value);
+  }
+
+  _finishRequest(request, method, value) {
+    if (request.terminalSettled) return;
+    this._settlePublicRequest(request, method, value);
+    request.terminalSettled = true;
+    this.pendingById.delete(request.id);
+    request.terminal.resolve();
   }
 
   _reportObserverError(error) {

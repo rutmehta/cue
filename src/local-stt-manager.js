@@ -1,4 +1,5 @@
 const { LocalSttError, normalizeEngineInspection } = require('./local-stt-engine');
+const { looksLikeHallucination } = require('./stt');
 
 const ENGINE_IDS = Object.freeze(['parakeet', 'whisper']);
 const CHANNELS = Object.freeze(['you', 'them']);
@@ -76,7 +77,7 @@ class LocalSttManager {
     clearTimer = clearTimeout,
     loadBenchmark = () => null,
     saveBenchmark = async () => {},
-    isValidTranscript = (text) => typeof text === 'string' && text.trim().length > 0,
+    isValidTranscript = (text) => typeof text === 'string' && !looksLikeHallucination(text),
     dispatch = () => {},
     onObserverError = () => {},
     benchmarkMaxAgeMs = BENCHMARK_MAX_AGE_MS,
@@ -122,21 +123,18 @@ class LocalSttManager {
     this.listeners = new Set();
     this.inspections = new Map();
     this.healthyIds = [];
-    this.startedEngines = new Set();
     this.failedEngines = new Set();
     this.activeEngineId = null;
     this.fallbackDetail = null;
     this.requestedEngine = null;
     this.cacheKey = null;
     this.needsBenchmark = false;
-    this.benchmarkPending = Promise.resolve();
     this.generation = 0;
-    this.generationStop = deferred();
+    this.lifecycle = this._createLifecycle(this.generation);
     this.running = false;
     this.startPromise = null;
+    this.startLifecycle = null;
     this.stopPromise = null;
-    this.jobs = new Set();
-    this.channelTails = new Map(CHANNELS.map((channel) => [channel, Promise.resolve()]));
   }
 
   onStatus(callback) {
@@ -154,21 +152,31 @@ class LocalSttManager {
   }
 
   start(settings = {}) {
-    if (this.startPromise) return this.startPromise;
+    if (this.startPromise && this.startLifecycle === this.lifecycle && !this.lifecycle.cancelled) return this.startPromise;
     if (this.running) return Promise.resolve(this.getStatus());
     const waitForStop = this.stopPromise || Promise.resolve();
     const generation = this.generation + 1;
     this.generation = generation;
-    this.generationStop = deferred();
-    const operation = waitForStop.then(() => this._performStart(settings, generation));
+    const lifecycle = this._createLifecycle(generation);
+    this.lifecycle = lifecycle;
+    const operation = waitForStop.then(() => {
+      this._assertLifecycle(lifecycle);
+      return this._performStart(settings, lifecycle);
+    });
     const exposed = operation.finally(() => {
-      if (this.startPromise === exposed) this.startPromise = null;
+      if (this.startPromise === exposed) {
+        this.startPromise = null;
+        this.startLifecycle = null;
+      }
     });
     this.startPromise = exposed;
+    this.startLifecycle = lifecycle;
     return exposed;
   }
 
-  async _performStart(settings, generation) {
+  async _performStart(settings, lifecycle) {
+    const generation = lifecycle.generation;
+    this._assertLifecycle(lifecycle);
     const requestedEngine = settings.requestedEngine || 'auto';
     if (!['auto', ...ENGINE_IDS].includes(requestedEngine)) {
       throw new LocalSttError('invalid_engine', `Unknown local engine: ${requestedEngine}`, 'Choose Auto, Parakeet, or Whisper.');
@@ -178,35 +186,39 @@ class LocalSttManager {
     this.fallbackDetail = null;
     this.cacheKey = null;
     this.needsBenchmark = false;
-    this._emit({ phase: 'probing', requestedEngine, activeEngine: null, detail: null });
+    lifecycle.benchmarkSelection = null;
+    lifecycle.benchmarkPending = Promise.resolve();
+    this._emit({ phase: 'probing', requestedEngine, activeEngine: null, detail: null }, generation);
 
     const ids = requestedEngine === 'auto' ? ENGINE_IDS : [requestedEngine];
     const inspections = await this._inspectEngineIds(ids, settings);
-    this._assertGeneration(generation);
+    this._assertLifecycle(lifecycle);
     this.inspections = new Map(inspections.map((value) => [value.id, value]));
     this.healthyIds = inspections.filter((value) => value.healthy).map((value) => value.id);
 
     if (requestedEngine !== 'auto') {
       const selected = this.inspections.get(requestedEngine);
-      if (!selected?.healthy) throw this._unavailableError(requestedEngine, selected);
-      this._emit({ phase: 'loading', requestedEngine, activeEngine: requestedEngine, detail: null });
+      if (!selected?.healthy) throw this._unavailableError(requestedEngine, selected, generation);
+      this._emit({ phase: 'loading', requestedEngine, activeEngine: requestedEngine, detail: null }, generation);
       try {
         await this._ensureEngineStarted(requestedEngine, generation);
       } catch (error) {
-        throw this._startFailure(requestedEngine, error);
+        this._assertLifecycle(lifecycle);
+        throw this._startFailure(requestedEngine, error, generation);
       }
       this._finishStart(requestedEngine, generation, 'ready', null);
       return this.getStatus();
     }
 
-    if (this.healthyIds.length === 0) throw this._unavailableError('auto');
+    if (this.healthyIds.length === 0) throw this._unavailableError('auto', null, generation);
     if (this.healthyIds.length === 1) {
       const selectedId = this.healthyIds[0];
-      this._emit({ phase: 'loading', requestedEngine, activeEngine: selectedId, detail: null });
+      this._emit({ phase: 'loading', requestedEngine, activeEngine: selectedId, detail: null }, generation);
       try {
         await this._ensureEngineStarted(selectedId, generation);
       } catch (error) {
-        throw this._startFailure(selectedId, error);
+        this._assertLifecycle(lifecycle);
+        throw this._startFailure(selectedId, error, generation);
       }
       this._finishStart(selectedId, generation, 'ready', null);
       return this.getStatus();
@@ -214,29 +226,32 @@ class LocalSttManager {
 
     this.cacheKey = buildBenchmarkCacheKey(inspections, { platform: this.platform, arch: this.architecture });
     const cached = await this._loadBenchmarkSafely();
-    this._assertGeneration(generation);
+    this._assertLifecycle(lifecycle);
     if (this._isValidBenchmark(cached)) {
       const selectedId = cached.winner;
-      this._emit({ phase: 'loading', requestedEngine, activeEngine: selectedId, detail: null });
+      this._emit({ phase: 'loading', requestedEngine, activeEngine: selectedId, detail: null }, generation);
       try {
         await this._ensureEngineStarted(selectedId, generation);
         this._finishStart(selectedId, generation, 'ready', null);
       } catch (error) {
+        this._assertLifecycle(lifecycle);
         this.failedEngines.add(selectedId);
         const alternateId = ENGINE_IDS.find((id) => id !== selectedId && this.healthyIds.includes(id));
         const detail = `${engineTitle(selectedId)} failed; continuing locally with ${engineTitle(alternateId)}.`;
-        this._emit({ phase: 'fallback', requestedEngine, activeEngine: alternateId, detail });
+        this.activeEngineId = null;
+        this._emit({ phase: 'fallback', requestedEngine, activeEngine: null, detail }, generation);
         try {
           await this._ensureEngineStarted(alternateId, generation);
         } catch (alternateError) {
-          throw this._startFailure(alternateId, alternateError);
+          this._assertLifecycle(lifecycle);
+          throw this._startFailure(alternateId, alternateError, generation);
         }
         this._finishStart(alternateId, generation, 'fallback', detail);
       }
       return this.getStatus();
     }
 
-    this._emit({ phase: 'loading', requestedEngine, activeEngine: null, detail: 'Preparing local engine benchmark.' });
+    this._emit({ phase: 'loading', requestedEngine, activeEngine: null, detail: 'Preparing local engine benchmark.' }, generation);
     const starts = await Promise.all(ENGINE_IDS.map(async (id) => {
       try {
         await this._ensureEngineStarted(id, generation);
@@ -246,9 +261,9 @@ class LocalSttManager {
         return { id, ok: false, error };
       }
     }));
-    this._assertGeneration(generation);
+    this._assertLifecycle(lifecycle);
     const readyIds = starts.filter((value) => value.ok).map((value) => value.id);
-    if (readyIds.length === 0) throw this._startFailure(starts[0].id, starts[0].error);
+    if (readyIds.length === 0) throw this._startFailure(starts[0].id, starts[0].error, generation);
     if (readyIds.length === 1) {
       const failedId = starts.find((value) => !value.ok)?.id;
       const detail = `${engineTitle(failedId)} failed; continuing locally with ${engineTitle(readyIds[0])}.`;
@@ -258,7 +273,7 @@ class LocalSttManager {
     this.running = true;
     this.needsBenchmark = true;
     this.activeEngineId = null;
-    this._emit({ phase: 'ready', requestedEngine, activeEngine: null, detail: 'Waiting for the first utterance benchmark.' });
+    this._emit({ phase: 'ready', requestedEngine, activeEngine: null, detail: 'Waiting for the first utterance benchmark.' }, generation);
     return this.getStatus();
   }
 
@@ -270,41 +285,58 @@ class LocalSttManager {
     } catch (error) {
       return Promise.reject(error);
     }
-    if (this.jobs.size >= this.maxQueuedTranscriptions) return Promise.reject(queueFullError());
+    const lifecycle = this.lifecycle;
+    const queue = lifecycle.queue;
+    if (queue.jobs.size >= this.maxQueuedTranscriptions) return Promise.reject(queueFullError());
 
-    const generation = this.generation;
     const completion = deferred();
-    const job = { generation, completion, settled: false, segment: copy };
-    this.jobs.add(job);
-    const previous = this.channelTails.get(copy.channel);
+    const job = { generation: lifecycle.generation, lifecycle, completion, settled: false, segment: copy };
+    queue.jobs.add(job);
+    const previous = queue.channelTails.get(copy.channel);
     const operation = previous.catch(() => {}).then(() => this._runJob(job));
     const tail = operation.catch(() => {}).finally(() => {
-      this.jobs.delete(job);
-      if (this.channelTails.get(copy.channel) === tail) this.channelTails.set(copy.channel, Promise.resolve());
+      queue.jobs.delete(job);
+      if (queue.channelTails.get(copy.channel) === tail) queue.channelTails.set(copy.channel, Promise.resolve());
     });
-    this.channelTails.set(copy.channel, tail);
+    queue.channelTails.set(copy.channel, tail);
     return completion.promise;
   }
 
   async _runJob(job) {
     if (job.settled) return;
     try {
-      this._assertGeneration(job.generation);
-      this._emit({ phase: 'transcribing' });
-      const result = this.needsBenchmark
-        ? await this._raceFirstUtterance(job.segment, job.generation)
-        : await this._transcribeWithFallback(job.segment, job.generation);
-      this._assertGeneration(job.generation);
+      this._assertLifecycle(job.lifecycle);
+      this._emit({ phase: 'transcribing' }, job.generation);
+      let result;
+      let selection = job.lifecycle.benchmarkSelection;
+      if (!selection && this.needsBenchmark) {
+        const userResult = this._raceFirstUtterance(job.segment, job.generation);
+        const enginePromise = userResult.then((value) => value.engine);
+        selection = { userResult, enginePromise };
+        job.lifecycle.benchmarkSelection = selection;
+        enginePromise.catch(() => {
+          if (job.lifecycle.benchmarkSelection === selection) job.lifecycle.benchmarkSelection = null;
+        });
+        result = await userResult;
+      } else {
+        if (!this.activeEngineId && selection) await selection.enginePromise;
+        result = await this._transcribeWithFallback(job.segment, job.generation);
+      }
+      this._assertLifecycle(job.lifecycle);
       this._settleJob(job, 'resolve', deepFreeze({ ...result }));
       this._emit({
         phase: this.fallbackDetail ? 'fallback' : 'ready',
         activeEngine: this.activeEngineId,
         detail: this.fallbackDetail
-      });
+      }, job.generation);
     } catch (error) {
       this._settleJob(job, 'reject', error);
       if (job.generation === this.generation && this.running && error?.code !== 'stt_stopped') {
-        this._emit({ phase: 'error', detail: error?.message || 'Local transcription failed.' });
+        this._emit({
+          phase: 'error',
+          activeEngine: this.activeEngineId,
+          detail: error?.message || 'Local transcription failed.'
+        }, job.generation);
       }
     }
   }
@@ -320,17 +352,26 @@ class LocalSttManager {
       this._assertGeneration(generation);
       if (this.requestedEngine !== 'auto' || segment.committed === true) throw error;
       const alternateId = ENGINE_IDS.find((id) => id !== firstId && this.healthyIds.includes(id) && !this.failedEngines.has(id));
-      if (!alternateId) throw error;
       this.failedEngines.add(firstId);
+      this.activeEngineId = null;
+      if (!alternateId) throw error;
       const detail = `${engineTitle(firstId)} failed; continuing locally with ${engineTitle(alternateId)}.`;
-      this._emit({ phase: 'fallback', activeEngine: alternateId, detail });
+      this._emit({ phase: 'fallback', activeEngine: null, detail }, generation);
       await this._ensureEngineStarted(alternateId, generation);
+      this._assertGeneration(generation);
       this.activeEngineId = alternateId;
       this.fallbackDetail = detail;
-      const result = normalizeResult(await this.engines.get(alternateId).transcribe(segment), alternateId);
-      this._assertGeneration(generation);
-      if (!this._validResult(result)) throw new Error(`${engineTitle(alternateId)} returned no valid transcript.`);
-      return result;
+      try {
+        const result = normalizeResult(await this.engines.get(alternateId).transcribe(segment), alternateId);
+        this._assertGeneration(generation);
+        if (!this._validResult(result)) throw new Error(`${engineTitle(alternateId)} returned no valid transcript.`);
+        return result;
+      } catch (alternateError) {
+        this._assertGeneration(generation);
+        this.failedEngines.add(alternateId);
+        this.activeEngineId = null;
+        throw alternateError;
+      }
     }
   }
 
@@ -342,19 +383,29 @@ class LocalSttManager {
     let winnerId = null;
     let remaining = ENGINE_IDS.length;
 
-    const tasks = ENGINE_IDS.map((id) => Promise.resolve()
-      .then(() => this.engines.get(id).transcribe(benchmarkSegment))
-      .then((raw) => {
-        const result = normalizeResult(raw, id);
-        outcomes.set(id, result);
-        if (!winnerId && this._validResult(result) && generation === this.generation && this.running) {
-          winnerId = id;
-          this.activeEngineId = id;
-          winner.resolve(result);
-        }
-      }, (error) => {
-        outcomes.set(id, { error, elapsedMs: null });
-      })
+    const tasks = ENGINE_IDS.map((id) => Promise.resolve().then(async () => {
+      const startedAt = this.now();
+      try {
+        const raw = await this.engines.get(id).transcribe(benchmarkSegment);
+        return { ok: true, raw, elapsedMs: this._benchmarkElapsed(raw?.elapsedMs, startedAt) };
+      } catch (error) {
+        return { ok: false, error, elapsedMs: this._benchmarkElapsed(null, startedAt) };
+      }
+    }).then((outcome) => {
+      if (!outcome.ok) {
+        outcomes.set(id, { status: 'error', value: outcome.elapsedMs });
+        return;
+      }
+      const result = normalizeResult(outcome.raw, id);
+      result.elapsedMs = outcome.elapsedMs;
+      const valid = this._validResult(result);
+      outcomes.set(id, { status: valid ? 'valid' : 'invalid', value: outcome.elapsedMs });
+      if (!winnerId && valid && generation === this.generation && this.running) {
+        winnerId = id;
+        this.activeEngineId = id;
+        winner.resolve(result);
+      }
+    })
       .finally(() => {
         remaining -= 1;
         if (remaining === 0 && !winnerId) {
@@ -369,21 +420,37 @@ class LocalSttManager {
 
     const selected = await Promise.race([
       winner.promise,
-      this.generationStop.promise.then(() => { throw stoppedError(); })
+      this._lifecycleFor(generation).stop.promise.then(() => { throw stoppedError(); })
     ]);
-    this.benchmarkPending = this._settleBenchmark({ tasks, outcomes, winnerId, generation });
+    const lifecycle = this._lifecycleFor(generation);
+    lifecycle.benchmarkPending = this._settleBenchmark({ tasks, outcomes, responseWinnerId: winnerId, generation });
     return selected;
   }
 
-  async _settleBenchmark({ tasks, outcomes, winnerId, generation }) {
-    await this._waitForBenchmarkLoser(tasks, generation);
-    if (generation !== this.generation || !this.running || !winnerId) return;
+  async _settleBenchmark({ tasks, outcomes, responseWinnerId, generation }) {
+    const waitOutcome = await this._waitForBenchmarkLoser(tasks, generation);
+    if (generation !== this.generation || !this.running || !responseWinnerId || waitOutcome === 'stopped') return;
+    if (waitOutcome === 'timeout') {
+      for (const id of ENGINE_IDS) {
+        if (!outcomes.has(id)) outcomes.set(id, { status: 'timeout', value: null });
+      }
+    }
+    let winnerId = null;
+    let fastest = Infinity;
+    for (const id of ENGINE_IDS) {
+      const outcome = outcomes.get(id);
+      if (outcome?.status === 'valid' && outcome.value < fastest) {
+        winnerId = id;
+        fastest = outcome.value;
+      }
+    }
+    if (!winnerId) return;
     const record = {
       cacheKey: this.cacheKey,
       winner: winnerId,
       elapsedMs: Object.fromEntries(ENGINE_IDS.map((id) => [
         id,
-        Number.isFinite(outcomes.get(id)?.elapsedMs) ? outcomes.get(id).elapsedMs : null
+        { ...outcomes.get(id) }
       ])),
       recordedAt: this.now()
     };
@@ -397,30 +464,37 @@ class LocalSttManager {
   async _waitForBenchmarkLoser(tasks, generation) {
     let timer = null;
     try {
-      await Promise.race([
-        Promise.all(tasks),
-        new Promise((resolve) => { timer = this.setTimer(resolve, this.benchmarkLoserTimeoutMs); }),
-        this.generationStop.promise
+      return await Promise.race([
+        Promise.all(tasks).then(() => 'complete'),
+        new Promise((resolve) => { timer = this.setTimer(() => resolve('timeout'), this.benchmarkLoserTimeoutMs); }),
+        this._lifecycleFor(generation).stop.promise.then(() => 'stopped')
       ]);
     } finally {
       if (timer !== null) this.clearTimer(timer);
     }
-    return generation === this.generation;
   }
 
   whenBenchmarkSettled() {
-    return this.benchmarkPending;
+    return this.lifecycle.benchmarkPending;
   }
 
   stop() {
     if (this.stopPromise) return this.stopPromise;
+    const lifecycle = this.lifecycle;
     this.running = false;
+    lifecycle.cancelled = true;
+    lifecycle.queue.abandoned = true;
+    lifecycle.stop.resolve();
     this.generation += 1;
-    this.generationStop.resolve();
-    for (const job of this.jobs) this._settleJob(job, 'reject', stoppedError());
+    if (this.startLifecycle === lifecycle) {
+      this.startPromise = null;
+      this.startLifecycle = null;
+    }
+    for (const job of lifecycle.queue.jobs) this._settleJob(job, 'reject', stoppedError());
+    const engineIds = new Set([...lifecycle.startedEngines, ...lifecycle.startingEngines.keys()]);
     const operation = Promise.resolve().then(async () => {
-      const engines = Array.from(this.startedEngines, (id) => this.engines.get(id));
-      this.startedEngines.clear();
+      const engines = Array.from(engineIds, (id) => this.engines.get(id));
+      lifecycle.startedEngines.clear();
       await this._boundedStop(engines);
       this.activeEngineId = null;
       this.healthyIds = [];
@@ -428,6 +502,9 @@ class LocalSttManager {
       this.failedEngines.clear();
       this.fallbackDetail = null;
       this.needsBenchmark = false;
+      lifecycle.benchmarkSelection = null;
+      this.cacheKey = null;
+      this.requestedEngine = null;
       this._emit({ phase: 'off', requestedEngine: null, activeEngine: null, detail: null });
       return this.getStatus();
     });
@@ -474,13 +551,34 @@ class LocalSttManager {
   }
 
   async _ensureEngineStarted(id, generation) {
-    if (this.startedEngines.has(id)) return;
-    await this.engines.get(id).start({ inspection: this.inspections.get(id) });
-    if (generation !== this.generation) {
-      await Promise.resolve(this.engines.get(id).stop()).catch(() => {});
-      throw stoppedError();
+    const lifecycle = this._lifecycleFor(generation);
+    this._assertLifecycle(lifecycle);
+    if (lifecycle.startedEngines.has(id)) return;
+    let entry = lifecycle.startingEngines.get(id);
+    if (!entry) {
+      const engine = this.engines.get(id);
+      const promise = Promise.resolve().then(() => engine.start({ inspection: this.inspections.get(id) }));
+      entry = { promise };
+      lifecycle.startingEngines.set(id, entry);
+      promise.then(
+        () => {
+          if (lifecycle.startingEngines.get(id) === entry) lifecycle.startingEngines.delete(id);
+          if (lifecycle.cancelled || lifecycle !== this.lifecycle || generation !== this.generation) {
+            this._handleLateEngineStart(lifecycle, id, engine);
+            return;
+          }
+          lifecycle.startedEngines.add(id);
+        },
+        () => {
+          if (lifecycle.startingEngines.get(id) === entry) lifecycle.startingEngines.delete(id);
+        }
+      );
     }
-    this.startedEngines.add(id);
+    await Promise.race([
+      entry.promise,
+      lifecycle.stop.promise.then(() => { throw stoppedError(); })
+    ]);
+    this._assertLifecycle(lifecycle);
   }
 
   _finishStart(activeEngineId, generation, phase, detail) {
@@ -488,11 +586,70 @@ class LocalSttManager {
     this.running = true;
     this.activeEngineId = activeEngineId;
     this.fallbackDetail = detail;
-    this._emit({ phase, activeEngine: activeEngineId, detail });
+    this._emit({ phase, activeEngine: activeEngineId, detail }, generation);
   }
 
   _assertGeneration(generation) {
     if (generation !== this.generation) throw stoppedError();
+  }
+
+  _assertLifecycle(lifecycle) {
+    if (!lifecycle || lifecycle.cancelled || lifecycle !== this.lifecycle || lifecycle.generation !== this.generation) {
+      throw stoppedError();
+    }
+  }
+
+  _lifecycleFor(generation) {
+    if (this.lifecycle?.generation !== generation) throw stoppedError();
+    return this.lifecycle;
+  }
+
+  _createLifecycle(generation) {
+    return {
+      generation,
+      cancelled: false,
+      stop: deferred(),
+      startedEngines: new Set(),
+      startingEngines: new Map(),
+      lateStopIds: new Set(),
+      benchmarkSelection: null,
+      benchmarkPending: Promise.resolve(),
+      queue: {
+        abandoned: false,
+        jobs: new Set(),
+        channelTails: new Map(CHANNELS.map((channel) => [channel, Promise.resolve()]))
+      }
+    };
+  }
+
+  _currentLifecycleOwnsEngine(id) {
+    const current = this.lifecycle;
+    return Boolean(current && !current.cancelled &&
+      (current.startedEngines.has(id) || current.startingEngines.has(id)));
+  }
+
+  _handleLateEngineStart(lifecycle, id, engine) {
+    const current = this.lifecycle;
+    if (current && !current.cancelled && current.startedEngines.has(id)) return;
+    const currentStart = current && !current.cancelled ? current.startingEngines.get(id) : null;
+    if (currentStart) {
+      currentStart.promise.then(
+        () => {
+          if (!this._currentLifecycleOwnsEngine(id)) this._scheduleLateEngineStop(lifecycle, id, engine);
+        },
+        () => {
+          if (!this._currentLifecycleOwnsEngine(id)) this._scheduleLateEngineStop(lifecycle, id, engine);
+        }
+      );
+      return;
+    }
+    this._scheduleLateEngineStop(lifecycle, id, engine);
+  }
+
+  _scheduleLateEngineStop(lifecycle, id, engine) {
+    if (lifecycle.lateStopIds.has(id)) return;
+    lifecycle.lateStopIds.add(id);
+    this._boundedStop([engine]).catch((error) => this._reportObserverError(error, 'late-engine-stop'));
   }
 
   _copyAndValidateSegment(segment) {
@@ -534,6 +691,13 @@ class LocalSttManager {
     }
   }
 
+  _benchmarkElapsed(returnedElapsedMs, startedAt) {
+    if (Number.isFinite(returnedElapsedMs) && returnedElapsedMs >= 0) return returnedElapsedMs;
+    const finishedAt = this.now();
+    if (!Number.isFinite(startedAt) || !Number.isFinite(finishedAt)) return 0;
+    return Math.max(0, finishedAt - startedAt);
+  }
+
   async _loadBenchmarkSafely() {
     try {
       return await this.loadBenchmark();
@@ -556,10 +720,30 @@ class LocalSttManager {
     const elapsed = value.elapsedMs;
     if (!elapsed || typeof elapsed !== 'object' || Array.isArray(elapsed)) return false;
     if (Object.keys(elapsed).sort().join(',') !== 'parakeet,whisper') return false;
-    return ENGINE_IDS.every((id) => Number.isFinite(elapsed[id]) && elapsed[id] >= 0);
+    for (const id of ENGINE_IDS) {
+      const outcome = elapsed[id];
+      if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome) || Object.getPrototypeOf(outcome) !== Object.prototype) return false;
+      if (Object.keys(outcome).sort().join(',') !== 'status,value') return false;
+      if (!['valid', 'invalid', 'error', 'timeout'].includes(outcome.status)) return false;
+      if (outcome.status === 'timeout') {
+        if (outcome.value !== null) return false;
+      } else if (!Number.isFinite(outcome.value) || outcome.value < 0) {
+        return false;
+      }
+    }
+    let fastestId = null;
+    let fastestElapsed = Infinity;
+    for (const id of ENGINE_IDS) {
+      const outcome = elapsed[id];
+      if (outcome.status === 'valid' && outcome.value < fastestElapsed) {
+        fastestId = id;
+        fastestElapsed = outcome.value;
+      }
+    }
+    return fastestId !== null && value.winner === fastestId;
   }
 
-  _unavailableError(requestedEngine, inspection = null) {
+  _unavailableError(requestedEngine, inspection = null, generation = null) {
     const reason = inspection?.errors?.[0];
     const label = requestedEngine === 'auto' ? 'Local speech recognition' : engineTitle(requestedEngine);
     const error = new LocalSttError(
@@ -567,17 +751,18 @@ class LocalSttManager {
       `${label} is unavailable${reason ? `: ${reason.message}` : '.'}`,
       reason?.action || 'Install or repair a supported local runtime and model.'
     );
-    this._emit({ phase: 'error', requestedEngine, activeEngine: null, detail: error.message });
+    this._emit({ phase: 'error', requestedEngine, activeEngine: null, detail: error.message }, generation);
     return error;
   }
 
-  _startFailure(id, cause) {
+  _startFailure(id, cause, generation = null) {
     const error = new LocalSttError(
       'engine_start_failed',
       `${engineTitle(id)} failed to start: ${cause?.message || 'Unknown local engine error.'}`,
       `Repair or restart the ${engineTitle(id)} local engine.`
     );
-    this._emit({ phase: 'error', activeEngine: null, detail: error.message });
+    this.activeEngineId = null;
+    this._emit({ phase: 'error', activeEngine: null, detail: error.message }, generation);
     return error;
   }
 
@@ -587,7 +772,8 @@ class LocalSttManager {
     job.completion[method](value);
   }
 
-  _emit(patch) {
+  _emit(patch, generation = null) {
+    if (generation !== null && generation !== this.generation) return;
     this.status = cloneStatus({ ...this.status, ...patch });
     const dispatchStatus = cloneStatus(this.status);
     try {
