@@ -1,8 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { IPC_EVENTS, IPC_INVOKES } = require('./src/ipc-contract');
 const platform = process.platform;
 
 contextBridge.exposeInMainWorld('cue', {
   platform,
+  sessionGetSnapshot: () => ipcRenderer.invoke(IPC_INVOKES.sessionGetSnapshot),
+  sessionCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.sessionCommand, command),
+  windowCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.windowCommand, command),
+  settingsOpen: () => ipcRenderer.invoke(IPC_INVOKES.settingsOpen),
+  captureProtection: () => ipcRenderer.invoke(IPC_INVOKES.captureProtection),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
   whisperModels: () => ipcRenderer.invoke('whisper:models'),
@@ -32,8 +38,10 @@ contextBridge.exposeInMainWorld('cue', {
   permissionsContinue: () => ipcRenderer.send('permissions:continue'),
   log: (msg) => ipcRenderer.send('log', msg),
   on: (channel, cb) => {
-    const allowed = ['capture:state', 'llm:start', 'llm:token', 'llm:done', 'llm:error', 'status', 'transcript', 'stt:interim', 'stt:final', 'stt:status', 'vad:state', 'applink:consent-request', 'hide:toggle', 'whisper:download-progress', 'whisper:models-changed'];
-    if (!allowed.includes(channel)) return;
-    ipcRenderer.on(channel, (_e, data) => cb(data));
+    const allowed = [IPC_EVENTS.sessionSnapshot, 'capture:state', 'llm:start', 'llm:token', 'llm:done', 'llm:error', 'status', 'transcript', 'stt:interim', 'stt:final', 'stt:status', 'vad:state', 'applink:consent-request', 'hide:toggle', 'settings:open', 'whisper:download-progress', 'whisper:models-changed'];
+    if (!allowed.includes(channel) || typeof cb !== 'function') return () => {};
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
   }
 });

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, screen, session, desktopCapturer, shell, dialog, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, screen, session, desktopCapturer, shell, dialog, systemPreferences, Tray, Menu } = require('electron');
 const path = require('path');
 const os = require('os');
 const store = require('./src/store');
@@ -12,6 +12,12 @@ const { createStreamingSTT } = require('./src/stt-streaming');
 const { AdaptiveVAD, AudioRingBuffer } = require('./src/vad');
 const { buildInterviewContext, detectCategory } = require('./src/interview-context');
 const { startAppLink, stopAppLink, recordEvent, appLinkConsentState, revokeAppLinkCaller } = require('./src/applink');
+const { applyContentProtection } = require('./src/capture-protection');
+const { IPC_EVENTS, IPC_INVOKES } = require('./src/ipc-contract');
+const { createLifecycleCoordinator } = require('./src/lifecycle');
+const { SessionController } = require('./src/session-controller');
+const { createTrayController } = require('./src/tray-menu');
+const { resolveOverlayBounds, storeBoundsForDisplay } = require('./src/window-state');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -27,6 +33,13 @@ const { locateWhisperRuntime } = require('./src/whisper-runtime');
 const { LocalWhisperTranscriber } = require('./src/local-whisper-transcriber');
 
 let win = null;
+let permWin = null;
+let sessionController = null;
+let lifecycleCoordinator = null;
+let trayController = null;
+let appLaunched = false;
+let quitCleanupStarted = false;
+const captureProtectionByWindow = new WeakMap();
 // Which global shortcuts cue actually holds. `globalShortcut.register` returns
 // false when another application already owns the combination, and nothing used
 // to look at that — so the only symptom was a key that did nothing. Iris reads
@@ -46,8 +59,6 @@ function getWindowsBuild() {
 const WIN_BUILD = getWindowsBuild();
 const WIN_SUPPORTS_CONTENT_PROTECTION = !isWindows || WIN_BUILD >= 19041;
 
-let permWin = null;
-
 // -------- capture / transcript state --------
 const state = { capturing: false, busy: false, transcribing: { you: false, them: false } };
 let sttDisabled = false; // set when the key can't reach any speech model (stops retry spam)
@@ -62,8 +73,7 @@ let flushTimer = null;
 let whisperModelManager = null;
 let localWhisperTranscriber = null;
 let activeWhisperModelId = null;
-let desiredCaptureState = false;
-let captureTransition = Promise.resolve(false);
+let llmRequestSequence = 0;
 
 // -------- streaming STT state --------
 let streamingSTT = { you: null, them: null }; // streaming STT instances per channel
@@ -97,6 +107,40 @@ function pushTranscript(turn) {
 
 function send(channel, data) { if (win && !win.isDestroyed()) win.webContents.send(channel, data); }
 
+function publishSessionSnapshot(snapshot = sessionController?.getSnapshot()) {
+  if (!snapshot) return;
+  send(IPC_EVENTS.sessionSnapshot, snapshot);
+}
+
+function protectWindow(browserWindow) {
+  const status = applyContentProtection(browserWindow, {
+    platform: process.platform,
+    windowsBuild: WIN_BUILD,
+    environment: process.env
+  });
+  captureProtectionByWindow.set(browserWindow, status);
+  return status;
+}
+
+function dispatchSession(event) {
+  if (!sessionController) return null;
+  return sessionController.dispatch(event);
+}
+
+function sourceForChannel(channel) {
+  return channel === 'you' ? 'mic' : 'system';
+}
+
+function markSourceLive(channel) {
+  if (!sessionController) return;
+  const snapshot = sessionController.getSnapshot();
+  if (!state.capturing || !['starting', 'listening'].includes(snapshot.session.phase)) return;
+  const source = sourceForChannel(channel);
+  if (snapshot.sources[source].phase !== 'live') {
+    dispatchSession({ type: 'SOURCE_UPDATED', source, patch: { phase: 'live', error: null } });
+  }
+}
+
 function getWhisperRuntime() {
   return locateWhisperRuntime({
     isPackaged: app.isPackaged,
@@ -112,6 +156,7 @@ function publishTranscript(channel, text) {
   if (!text || !text.trim()) return;
   const turn = { channel, text: text.trim(), ts: Date.now() };
   pushTranscript(turn);
+  dispatchSession({ type: 'TRANSCRIPT_FINAL', source: sourceForChannel(channel), text: turn.text });
   send('transcript', turn);
   send('stt:final', { channel, text: turn.text });
 }
@@ -181,31 +226,37 @@ async function getWhisperOverview() {
 
 // -------- window --------
 function createWindow() {
-  const { workArea } = screen.getPrimaryDisplay();
-  const W = 700, H = 600;
-
   const savedSettings = store.getSettings();
-  let startX = Math.round(workArea.x + (workArea.width - W) / 2);
-  let startY = workArea.y + 6;
-
-  if (savedSettings.windowX !== null && savedSettings.windowY !== null) {
-    const clampedX = Math.max(workArea.x - W + 100, Math.min(savedSettings.windowX, workArea.x + workArea.width - 100));
-    const clampedY = Math.max(workArea.y, Math.min(savedSettings.windowY, workArea.y + workArea.height - 40));
-    startX = clampedX;
-    startY = clampedY;
+  const displays = screen.getAllDisplays();
+  const primaryDisplay = screen.getPrimaryDisplay();
+  let savedByDisplay = savedSettings.overlay?.boundsByDisplay || {};
+  if (Object.keys(savedByDisplay).length === 0
+    && savedSettings.windowX !== null && savedSettings.windowY !== null) {
+    savedByDisplay = storeBoundsForDisplay(savedByDisplay, primaryDisplay.id, {
+      x: savedSettings.windowX,
+      y: savedSettings.windowY,
+      width: 720,
+      height: 600
+    });
   }
+  const { displayId: _displayId, ...bounds } = resolveOverlayBounds({
+    displays,
+    primaryDisplayId: primaryDisplay.id,
+    savedByDisplay
+  });
 
   const winOptions = {
-    width: W,
-    height: H,
-    x: startX,
-    y: startY,
+    ...bounds,
+    minWidth: 420,
+    minHeight: 80,
     frame: false,
     transparent: true,
     hasShadow: false,
     resizable: true,
     skipTaskbar: true,
     alwaysOnTop: true,
+    show: false,
+    title: 'Cue',
     fullscreenable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -222,54 +273,55 @@ function createWindow() {
     winOptions.type = 'toolbar';
   }
 
-  win = new BrowserWindow(winOptions);
+  const createdWindow = new BrowserWindow(winOptions);
+  win = createdWindow;
+  const protectionStatus = protectWindow(createdWindow);
+  createdWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+  createdWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (isMac && typeof createdWindow.setHiddenInMissionControl === 'function') createdWindow.setHiddenInMissionControl(true);
+  createdWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
-  // Fix 2: Only call setContentProtection if the OS supports it.
-  // On Windows, WDA_EXCLUDEFROMCAPTURE requires build 19041+ (Windows 10 May 2020 Update).
-  // On older builds we skip it silently to avoid a no-op and send a warning to the renderer.
-  const shouldProtect = !process.env.CUE_NO_PROTECT;
-  if (shouldProtect) {
-    if (WIN_SUPPORTS_CONTENT_PROTECTION) {
-      win.setContentProtection(true);
-    } else {
-      // Will notify the renderer after it loads
-      console.log(`[cue] Windows build ${WIN_BUILD} < 19041 — setContentProtection not supported. Window may appear in screen shares.`);
-    }
-  }
-
-  win.setAlwaysOnTop(true, 'screen-saver', 1);
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  if (isMac && typeof win.setHiddenInMissionControl === 'function') win.setHiddenInMissionControl(true);
-
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-
-  let moveSaveTimer = null;
-  win.on('moved', () => {
-    clearTimeout(moveSaveTimer);
-    moveSaveTimer = setTimeout(() => {
-      if (win && !win.isDestroyed()) {
-        const [x, y] = win.getPosition();
-        store.setSettings({ windowX: x, windowY: y });
-      }
-    }, 500);
-  });
-
-  win.setTitle('Microsoft Edge Update'); // set before load
-
-  win.webContents.on('did-finish-load', () => {
-    win.showInactive();
-    win.setTitle('Microsoft Edge Update');
-    // Warn about missing content protection on old Windows builds
-    if (isWindows && shouldProtect && !WIN_SUPPORTS_CONTENT_PROTECTION) {
-      send('status', {
-        message: `Heads up: your Windows version (build ${WIN_BUILD}) does not support screen-share hiding. Upgrade to Windows 10 build 19041+ or Windows 11 to enable invisibility in screen shares.`
+  let boundsSaveTimer = null;
+  const persistBounds = () => {
+    clearTimeout(boundsSaveTimer);
+    boundsSaveTimer = setTimeout(() => {
+      if (createdWindow.isDestroyed()) return;
+      const currentBounds = createdWindow.getBounds();
+      const display = screen.getDisplayMatching(currentBounds);
+      const currentSettings = store.getSettings();
+      const currentSaved = currentSettings.overlay?.boundsByDisplay || {};
+      const nextSaved = storeBoundsForDisplay(currentSaved, display.id, currentBounds);
+      store.setSettings({
+        overlay: { ...(currentSettings.overlay || {}), boundsByDisplay: nextSaved }
       });
+    }, 500);
+  };
+  createdWindow.on('moved', persistBounds);
+  createdWindow.on('resized', persistBounds);
+  createdWindow.on('close', (event) => {
+    if (quitCleanupStarted) return;
+    event.preventDefault();
+    createdWindow.hide();
+  });
+  createdWindow.on('closed', () => {
+    clearTimeout(boundsSaveTimer);
+    if (win === createdWindow) win = null;
+  });
+
+  createdWindow.webContents.on('did-finish-load', () => {
+    if (createdWindow.isDestroyed()) return;
+    createdWindow.showInactive();
+    publishSessionSnapshot();
+    if (!protectionStatus.configured && protectionStatus.reason) {
+      send('status', { message: protectionStatus.reason });
     }
   });
-  win.webContents.on('render-process-gone', (_e, d) => {
+  createdWindow.webContents.on('render-process-gone', (_e, d) => {
     console.log('[cue] renderer gone', JSON.stringify(d));
     recordEvent({ level: 'fatal', event: 'renderer_gone', code: d && d.reason, msg: 'renderer process ended: ' + JSON.stringify(d), frame: 'BrowserWindow' });
   });
+
+  return createdWindow;
 }
 
 // -------- STT flushing (batch mode fallback) --------
@@ -296,9 +348,7 @@ async function flushChannel(channel) {
       return;
     }
     if (res.text && res.text.trim() && res.text.trim().length > 1 && !/^[?!.,;:\-…]+$/.test(res.text.trim())) {
-      const turn = { channel, text: res.text.trim(), ts: Date.now() };
-      pushTranscript(turn);
-      send('transcript', turn);
+      publishTranscript(channel, res.text);
     }
   } catch (e) {
     console.log('[stt] error', e && e.message);
@@ -347,10 +397,12 @@ function initStreamingSTT() {
       onTranscript: (ch, text) => {
         const turn = { channel: ch, text, ts: Date.now() };
         pushTranscript(turn);
+        dispatchSession({ type: 'TRANSCRIPT_FINAL', source: sourceForChannel(ch), text });
         send('transcript', turn);
         send('stt:final', { channel: ch, text });
       },
       onInterim: (ch, text) => {
+        dispatchSession({ type: 'TRANSCRIPT_INTERIM', source: sourceForChannel(ch), text });
         send('stt:interim', { channel: ch, text });
       },
       onError: (err) => {
@@ -437,7 +489,6 @@ async function setCapturing(active) {
         return true;
       } catch (error) {
         state.capturing = false;
-        desiredCaptureState = false;
         if (error.code === 'STARTUP_CANCELLED') {
           send('stt:status', { provider: 'local', status: 'off' });
           send('capture:state', { active: false, streaming: false, mode: 'local' });
@@ -490,6 +541,8 @@ async function runFeature(mode, userText) {
   if (!def) return;
   state.busy = true;
   let streamSettled = false; // drop stray tokens from a stream we've already abandoned
+  let requestId = null;
+  let requestStarted = false;
   try {
     const settings = store.getSettings();
     const llm = createLLM(settings);
@@ -501,6 +554,16 @@ async function runFeature(mode, userText) {
 
     if (!llm.ready) {
       const message = llm.configurationError || ('Complete the ' + settings.provider + ' provider settings. Model: ' + (llm.model || 'unset') + '.');
+      requestId = `request-${Date.now()}-${++llmRequestSequence}`;
+      dispatchSession({
+        type: 'LLM_REQUEST_STARTED',
+        id: requestId,
+        provider: llm.provider,
+        model: llm.model,
+        contextUsed: { screen: false, mic: false, system: false }
+      });
+      requestStarted = true;
+      dispatchSession({ type: 'LLM_REQUEST_FAILED', id: requestId, error: { code: 'configuration_error', message } });
       send('llm:error', { message });
       return;
     }
@@ -526,6 +589,19 @@ async function runFeature(mode, userText) {
     const contextBlock = buildInterviewContext(settingsForPrompt, mode, transcript);
     const system = def.buildSystem ? def.buildSystem(contextBlock, settingsForPrompt.aiRules || '') : (def.system || '');
     const built = def.build({ transcript, userText: userText || '' });
+    requestId = `request-${Date.now()}-${++llmRequestSequence}`;
+    dispatchSession({
+      type: 'LLM_REQUEST_STARTED',
+      id: requestId,
+      provider: llm.provider,
+      model: llm.model,
+      contextUsed: {
+        screen: Boolean(imageDataUrl),
+        mic: transcript.some((turn) => turn.channel === 'you'),
+        system: transcript.some((turn) => turn.channel === 'them')
+      }
+    });
+    requestStarted = true;
 
     // Watchdog: a provider that stalls mid-stream would otherwise hang the await forever,
     // leaving state.busy = true and wedging every later question until an app restart.
@@ -544,7 +620,15 @@ async function runFeature(mode, userText) {
           system,
           turns: [{ role: 'user', text: built }],
           imageDataUrl,
-          onToken: (t) => { if (streamSettled) return; rearm(); send('llm:token', { text: t }); }
+          onToken: (t) => {
+            if (streamSettled) return;
+            rearm();
+            const snapshot = sessionController?.getSnapshot();
+            if (snapshot?.request.phase !== 'streaming') {
+              dispatchSession({ type: 'LLM_TOKEN_STARTED', id: requestId });
+            }
+            send('llm:token', { text: t });
+          }
         }),
         stalled
       ]);
@@ -552,8 +636,16 @@ async function runFeature(mode, userText) {
       streamSettled = true;
       clearTimeout(watchdog);
     }
+    dispatchSession({ type: 'LLM_REQUEST_FINISHED', id: requestId });
     send('llm:done', {});
   } catch (e) {
+    if (requestStarted) {
+      dispatchSession({
+        type: 'LLM_REQUEST_FAILED',
+        id: requestId,
+        error: { code: 'generation_failed', message: e && e.message ? e.message : String(e) }
+      });
+    }
     recordEvent({ level: 'error', event: 'llm_failed', msg: e && e.message ? e.message : String(e), frame: 'runFeature', context: { mode, provider: store.getSettings().provider } });
     send('llm:error', { message: e && e.message ? e.message : String(e) });
   } finally {
@@ -563,18 +655,40 @@ async function runFeature(mode, userText) {
 }
 
 // -------- IPC --------
+ipcMain.handle(IPC_INVOKES.sessionGetSnapshot, () => sessionController?.getSnapshot() || null);
+ipcMain.handle(IPC_INVOKES.sessionCommand, (_event, command) => {
+  if (!lifecycleCoordinator) throw new Error('Cue session is not ready.');
+  return command === 'quit' ? requestQuit() : lifecycleCoordinator.command(command);
+});
+ipcMain.handle(IPC_INVOKES.windowCommand, (_event, command) => {
+  if (!lifecycleCoordinator) throw new Error('Cue window is not ready.');
+  if (command === 'lock') return lockInteraction();
+  if (!['show', 'hide', 'collapse', 'unlock', 'recenter'].includes(command)) {
+    throw new TypeError(`Unknown window command: ${String(command)}`);
+  }
+  return lifecycleCoordinator.command(command);
+});
+ipcMain.handle(IPC_INVOKES.settingsOpen, () => {
+  if (!lifecycleCoordinator) throw new Error('Cue settings are not ready.');
+  return lifecycleCoordinator.command('settings');
+});
+ipcMain.handle(IPC_INVOKES.captureProtection, (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  return captureProtectionByWindow.get(senderWindow) || {
+    configured: false,
+    mode: 'error',
+    reason: 'Capture protection status is unavailable for this window.'
+  };
+});
 ipcMain.handle('settings:get', () => store.getSettings());
 ipcMain.handle('settings:set', (_e, patch) => { sttDisabled = false; return store.setSettings(patch); });
-ipcMain.handle('capture:toggle', () => {
-  const targetState = !desiredCaptureState;
-  desiredCaptureState = targetState;
-  if (!targetState && !state.capturing && localWhisperTranscriber) {
-    localWhisperTranscriber.forceStop().catch(() => {});
-  }
-  captureTransition = captureTransition
-    .catch(() => state.capturing)
-    .then(() => setCapturing(targetState));
-  return captureTransition;
+ipcMain.handle('capture:toggle', async () => {
+  if (!sessionController) throw new Error('Cue session is not ready.');
+  const phase = sessionController.getSnapshot().session.phase;
+  if (phase === 'idle' || phase === 'error') await sessionController.start();
+  else if (phase === 'paused') await sessionController.resume();
+  else await sessionController.stop();
+  return state.capturing;
 });
 ipcMain.handle('capture:state', () => ({ active: state.capturing }));
 ipcMain.handle('whisper:models', () => getWhisperOverview());
@@ -623,11 +737,15 @@ ipcMain.handle('transcript:clear', () => {
   return { ok: true };
 });
 ipcMain.on('ask', (_e, payload) => runFeature(payload.mode, payload.text));
-ipcMain.on('mic:pcm', (_e, arrayBuffer) => { if (state.capturing) routeAudio('you', arrayBuffer); });
-ipcMain.on('system:pcm', (_e, arrayBuffer) => { if (state.capturing) routeAudio('them', arrayBuffer); });
+ipcMain.on('mic:pcm', (_e, arrayBuffer) => {
+  if (state.capturing) { markSourceLive('you'); routeAudio('you', arrayBuffer); }
+});
+ipcMain.on('system:pcm', (_e, arrayBuffer) => {
+  if (state.capturing) { markSourceLive('them'); routeAudio('them', arrayBuffer); }
+});
 ipcMain.on('mouse:ignore', (_e, v) => { if (win) win.setIgnoreMouseEvents(!!v, { forward: true }); });
 ipcMain.on('open-pane', (_e, url) => { shell.openExternal(url).catch(() => {}); });
-ipcMain.on('app:quit', () => app.quit());
+ipcMain.on('app:quit', () => { void requestQuit(); });
 ipcMain.on('log', (_e, msg) => console.log('[renderer]', msg));
 // -------- resume / job-description file import --------
 // The dialog runs in MAIN and is filtered to pdf/docx; the renderer never supplies a path.
@@ -652,7 +770,6 @@ ipcMain.handle('profile:pickDocument', async () => {
     return { canceled: false, error: (e && e.message) || String(e) };
   }
 });
-ipcMain.on('app:quit', () => app.quit());
 ipcMain.handle('applink:state', () => appLinkConsentState());
 ipcMain.handle('applink:revoke', (_e, callerId) => revokeAppLinkCaller(callerId));
 
@@ -663,7 +780,7 @@ ipcMain.on('permissions:continue', async () => {
   const status = await getPermissionStatus();
   if (status.mic === 'granted' && status.screen === 'granted') {
     if (permWin) { permWin.close(); permWin = null; }
-    launchApp();
+    await launchApp();
   }
 });
 
@@ -672,8 +789,10 @@ function registerShortcuts() {
   shortcutState.assist = globalShortcut.register('CommandOrControl+Return', () => runFeature('assist', ''));
   shortcutState.say = globalShortcut.register('CommandOrControl+Shift+Return', () => runFeature('say', ''));
   shortcutState.leetcode = globalShortcut.register('CommandOrControl+H', () => runFeature('leetcode', ''));
-  shortcutState.hide = globalShortcut.register('CommandOrControl+Shift+/', () => send('hide:toggle', {}));
-  shortcutState.quit = globalShortcut.register('CommandOrControl+Shift+X', () => app.quit());
+  shortcutState.hide = globalShortcut.register('CommandOrControl+Shift+/', () => {
+    void lifecycleCoordinator?.command('collapse');
+  });
+  shortcutState.quit = globalShortcut.register('CommandOrControl+Shift+X', () => { void requestQuit(); });
   for (const [name, wasRegistered] of Object.entries(shortcutState)) {
     if (!wasRegistered) {
       recordEvent({ level: 'warn', event: 'shortcut_unavailable', msg: 'another application holds the ' + name + ' shortcut', frame: 'registerShortcuts', context: { shortcut: name } });
@@ -739,7 +858,7 @@ async function requestPermissions() {
 function createPermissionsWindow() {
   const { workArea } = screen.getPrimaryDisplay();
   const W = 500, H = 540;
-  permWin = new BrowserWindow({
+  const createdWindow = new BrowserWindow({
     width: W,
     height: H,
     x: Math.round(workArea.x + (workArea.width - W) / 2),
@@ -749,6 +868,8 @@ function createPermissionsWindow() {
     hasShadow: true,
     resizable: false,
     skipTaskbar: false,
+    show: false,
+    title: 'Cue',
     fullscreenable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -757,12 +878,122 @@ function createPermissionsWindow() {
       sandbox: false,
     }
   });
-  permWin.loadFile(path.join(__dirname, 'renderer', 'permissions.html'));
-  permWin.webContents.on('did-finish-load', () => permWin.show());
+  permWin = createdWindow;
+  protectWindow(createdWindow);
+  createdWindow.loadFile(path.join(__dirname, 'renderer', 'permissions.html'));
+  createdWindow.webContents.on('did-finish-load', () => createdWindow.show());
+  createdWindow.on('closed', () => {
+    if (permWin === createdWindow) permWin = null;
+  });
+  return createdWindow;
+}
+
+function showOverlay() {
+  if (!win || win.isDestroyed()) createWindow();
+  if (win && !win.isDestroyed()) {
+    win.setIgnoreMouseEvents(false);
+    win.showInactive();
+    publishSessionSnapshot();
+  }
+}
+
+function hideOverlay() {
+  if (win && !win.isDestroyed()) win.hide();
+}
+
+function collapseOverlay() {
+  send('hide:toggle', {});
+}
+
+function unlockInteraction() {
+  if (!win || win.isDestroyed()) createWindow();
+  win.setIgnoreMouseEvents(false);
+  win.showInactive();
+}
+
+function lockInteraction() {
+  if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(true, { forward: true });
+}
+
+function recenterOverlay() {
+  if (!win || win.isDestroyed()) createWindow();
+  const currentDisplay = screen.getDisplayMatching(win.getBounds());
+  const { displayId: _displayId, ...bounds } = resolveOverlayBounds({
+    displays: [currentDisplay],
+    primaryDisplayId: currentDisplay.id,
+    savedByDisplay: {}
+  });
+  win.setBounds(bounds);
+  win.showInactive();
+}
+
+function openSettings() {
+  showOverlay();
+  send('settings:open', {});
+}
+
+function cancelActiveDownload() {
+  if (whisperModelManager?.activeDownload) {
+    whisperModelManager.cancelDownload(whisperModelManager.activeDownload.modelId);
+  }
+}
+
+async function stopLocalEngines() {
+  const activeTranscriber = localWhisperTranscriber;
+  localWhisperTranscriber = null;
+  activeWhisperModelId = null;
+  await Promise.allSettled([
+    activeTranscriber ? activeTranscriber.forceStop() : Promise.resolve(),
+    stopAppLink()
+  ]);
+}
+
+function destroyWindowsAndTray() {
+  trayController?.destroy();
+  trayController = null;
+  for (const browserWindow of [win, permWin]) {
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.removeAllListeners('close');
+      browserWindow.destroy();
+    }
+  }
+  win = null;
+  permWin = null;
+  sessionController?.dispose();
+}
+
+function requestQuit() {
+  if (quitCleanupStarted && lifecycleCoordinator) return lifecycleCoordinator.command('quit');
+  quitCleanupStarted = true;
+  if (!lifecycleCoordinator) {
+    app.exit(0);
+    return Promise.resolve();
+  }
+  return lifecycleCoordinator.command('quit');
+}
+
+async function createAppTray() {
+  try {
+    const icon = await app.getFileIcon(process.execPath, { size: 'small' });
+    trayController = createTrayController({
+      Tray,
+      Menu,
+      icon,
+      sessionController,
+      command: (command) => lifecycleCoordinator.command(command)
+    });
+  } catch (error) {
+    console.log('[cue] tray unavailable:', error && error.message);
+  }
 }
 
 // -------- launch (called after permissions are confirmed) --------
-function launchApp() {
+async function launchApp() {
+  if (appLaunched) {
+    showOverlay();
+    return;
+  }
+  appLaunched = true;
   if (isMac && app.dock) app.dock.hide();
 
   whisperModelManager = new WhisperModelManager({ userDataPath: app.getPath('userData') });
@@ -772,7 +1003,7 @@ function launchApp() {
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowMedia(permission));
 
   // System-audio loopback for getDisplayMedia: hand back a screen source with 'loopback'
-  // audio so the renderer can capture what's playing (Zoom/Meet) using cue's own grant.
+  // audio so the renderer can capture what's playing (Zoom/Meet) using Cue's own grant.
   session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
     desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
       if (!sources.length) return callback();
@@ -783,64 +1014,96 @@ function launchApp() {
     }).catch(() => callback());
   }, { useSystemPicker: false });
 
+  sessionController = new SessionController({
+    settings: store.getSettings(),
+    startCapture: async () => {
+      const active = await setCapturing(true);
+      if (!active) throw new Error('Capture could not be started.');
+    },
+    stopCapture: () => setCapturing(false),
+    publish: publishSessionSnapshot
+  });
+
+  createWindow();
+  lifecycleCoordinator = createLifecycleCoordinator({
+    platform: process.platform,
+    trayEnabled: true,
+    showOverlay,
+    hideOverlay,
+    collapseOverlay,
+    startSession: () => sessionController.start(),
+    pauseSession: () => sessionController.pause(),
+    resumeSession: () => sessionController.resume(),
+    stopSession: () => sessionController.stop(),
+    unlockInteraction,
+    recenterOverlay,
+    openSettings,
+    stopLocalEngines,
+    cancelDownloads: cancelActiveDownload,
+    unregisterShortcuts: () => globalShortcut.unregisterAll(),
+    destroyWindowsAndTray,
+    exit: () => app.exit(0)
+  });
+  await createAppTray();
+
   // Started before the shortcuts so their registration failures are recorded.
   startAppLink({
     snapshot: () => ({
       state,
+      session: sessionController.getSnapshot(),
       transcript,
       settings: store.getSettings(),
       sttDisabled,
       shortcuts: { ...shortcutState },
       windowAlive: !!(win && !win.isDestroyed()),
     }),
-    setCapturing,
-    // Looked up rather than captured: the window is recreated on 'activate',
-    // so a reference taken at startup goes stale.
+    setCapturing: (active) => active ? sessionController.start() : sessionController.stop(),
     getWindow: () => win,
   });
 
-  createWindow();
   registerShortcuts();
+  publishSessionSnapshot();
 }
 
 // -------- lifecycle --------
 app.whenReady().then(async () => {
-  app.setName('MicrosoftEdgeUpdate');
-  if (isWindows) {
-    process.title = 'MicrosoftEdgeUpdate';
-  }
+  app.setName('Cue');
+  if (isWindows) process.title = 'Cue';
 
   if (isMac) {
     const allGranted = await requestPermissions();
     if (!allGranted) {
-      // Show the permissions gate — the dock stays visible so the user can find the app
+      // Show the permissions gate — the dock stays visible so the user can find the app.
       createPermissionsWindow();
-      app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createPermissionsWindow(); });
       return;
     }
   }
 
-  launchApp();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  await launchApp();
 });
 
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
-  // Best effort, deliberately not blocking the quit: the library also removes
-  // the instance file from a `process.on('exit')` handler, and a file left
-  // behind is harmless anyway because readers check whether the PID is alive.
-  // Delaying shutdown to tidy a directory would be the wrong trade.
-  stopAppLink();
-  if (whisperModelManager?.activeDownload) {
-    whisperModelManager.cancelDownload(whisperModelManager.activeDownload.modelId);
+app.on('activate', async () => {
+  if (quitCleanupStarted) return;
+  if (!appLaunched) {
+    if (!permWin || permWin.isDestroyed()) createPermissionsWindow();
+    return;
   }
-  if (localWhisperTranscriber) localWhisperTranscriber.forceStop().catch(() => {});
+  showOverlay();
 });
-app.on('window-all-closed', () => app.quit());
 
-app.on('will-quit', () => { globalShortcut.unregisterAll(); });
-app.on('window-all-closed', (e) => {
-  // Don't quit while the permissions window is open — the user may be in System Settings
-  if (permWin) { e.preventDefault(); return; }
-  app.quit();
+app.on('before-quit', (event) => {
+  if (quitCleanupStarted) return;
+  event.preventDefault();
+  void requestQuit();
+});
+
+app.on('will-quit', (event) => {
+  if (quitCleanupStarted) return;
+  event.preventDefault();
+  void requestQuit();
+});
+
+app.on('window-all-closed', () => {
+  if (quitCleanupStarted || isMac) return;
+  if (lifecycleCoordinator?.closeDecision() === 'quit') void requestQuit();
 });

@@ -28,6 +28,7 @@
   let aiEl = null;       // current streaming <div class="ai-text">
   let caretEl = null;
   let responseCount = 0;
+  let latestSessionSnapshot = null;
   const MAX_RESPONSES = 20;
 
   const messages = $('#messages');
@@ -550,26 +551,29 @@
     await cue.settingsSet({ smart: settings.smart });
   });
 
-  // Hide / collapse
+  // The toolbar Hide action hides the overlay without changing the session.
   function toggleHide() {
     const collapsed = $('#panel').classList.toggle('collapsed');
     $('#hide-btn').classList.toggle('collapsed', collapsed);
     $('#live-dot').style.display = collapsed ? 'none' : '';
   }
-  $('#hide-btn').addEventListener('click', toggleHide);
+  $('#hide-btn').addEventListener('click', () => { void cue.windowCommand('hide'); });
   cue.on('hide:toggle', toggleHide);
+  $('#quit-btn').addEventListener('click', () => { void cue.sessionCommand('quit'); });
 
-  // Stop = start/stop listening. Kick off system-audio capture straight from the click so
+  // Start/end listening. Kick off system-audio capture straight from the click so
   // the user-gesture is fresh for getDisplayMedia (loopback capture needs it).
   $('#stop-btn').addEventListener('click', async () => {
-    const turningOn = !$('#stop-btn').classList.contains('active');
+    const phase = latestSessionSnapshot?.session?.phase || 'idle';
+    const turningOn = phase === 'idle' || phase === 'error' || phase === 'paused';
     if (turningOn) {
       // startSystemAudio may fail (user cancels, no permission) — that's OK,
       // mic will still work and capture will toggle regardless
       try { await startSystemAudio(); } catch (_) { /* handled inside startSystemAudio */ }
     }
-    const active = await cue.captureToggle();
-    if (turningOn && !active) stopSystemAudio();
+    const command = phase === 'paused' ? 'resume' : turningOn ? 'start' : 'end-session';
+    const snapshot = await cue.sessionCommand(command);
+    if (turningOn && (!snapshot || snapshot.session?.phase === 'error')) stopSystemAudio();
   });
 
   // Transcript toggle removed — sidebar now auto-opens with listening
@@ -927,42 +931,57 @@
   }
 
   // ---- events from main --------------------------------------------------
-  cue.on('capture:state', ({ active, streaming, mode }) => {
-    setLiveDotState(active ? 'idle' : 'off');
-    $('#stop-btn').classList.toggle('active', active);
-    // FIX #4: Add .listening class to composer when capture is active
+  function applySessionSnapshot(snapshot) {
+    if (!snapshot || !snapshot.session) return;
+    if (latestSessionSnapshot && snapshot.revision < latestSessionSnapshot.revision) return;
+    latestSessionSnapshot = snapshot;
+    const phase = snapshot.session.phase;
+    const active = phase === 'starting' || phase === 'listening';
+    const paused = phase === 'paused';
+    const stopping = phase === 'stopping';
+    const stopButton = $('#stop-btn');
+    const labels = {
+      idle: 'Start listening',
+      starting: 'Starting listening',
+      listening: 'End session',
+      paused: 'Resume listening',
+      stopping: 'Stopping listening',
+      error: 'Retry listening'
+    };
+
+    stopButton.classList.toggle('active', active);
+    stopButton.classList.toggle('paused', paused);
+    stopButton.disabled = stopping;
+    stopButton.title = labels[phase] || 'Session control';
+    stopButton.setAttribute('aria-label', labels[phase] || 'Session control');
     composer.classList.toggle('listening', active);
-    // Update history button to show active state when listening
     const historyBtn = document.getElementById('history-btn');
-    if (historyBtn) {
-      historyBtn.classList.toggle('listening', active);
-    }
-    // startSystemAudio() is called directly from the stop-button click handler
-    // so that the getDisplayMedia request has a fresh user gesture.
-    // Here we only start the mic (no gesture required) and stop everything on deactivate.
+    if (historyBtn) historyBtn.classList.toggle('listening', active);
+
     if (active) {
-      startMic();
-      // Don't auto-open sidebar — user can toggle it manually
+      setLiveDotState(phase === 'starting' ? 'transcribing' : 'idle');
+      void startMic();
     } else {
+      setLiveDotState('off');
       stopMic();
       stopSystemAudio();
-      // FIX #2: Clear interim element when capture stops
       if (interimEl) {
         interimEl.textContent = '';
         interimEl.classList.remove('show');
       }
-      // Don't auto-close sidebar — let user keep it open if they want
     }
-    updateSttStatus({ active, streaming });
-    if (active) { startMic(); } else { stopMic(); stopSystemAudio(); }
-    if (active && mode === 'local') {
-      sttState = 'local';
+
+    const stt = snapshot.stt || {};
+    if (stt.route === 'local' && active) {
+      sttState = stt.phase === 'loading' ? 'loading' : 'local';
       const label = document.getElementById('stt-status');
-      if (label) { label.textContent = 'local'; label.className = 'stt-status stt-local'; }
+      if (label) { label.textContent = sttState; label.className = 'stt-status stt-' + sttState; }
     } else {
-      updateSttStatus({ active, streaming });
+      updateSttStatus({ active });
     }
-  });
+  }
+
+  cue.on('session:snapshot', applySessionSnapshot);
 
   // ---- real-time transcript display (interim + final) ----
   let interimEl = null;
@@ -1040,8 +1059,6 @@
         label.textContent = localLabels[status] || status;
         label.className = 'stt-status stt-' + sttState;
       }
-      if (status === 'loading') $('#stop-btn').classList.add('active');
-      if (status === 'off' || status === 'error') $('#stop-btn').classList.remove('active');
       if (status === 'loading' || status === 'transcribing' || status === 'stopping') setLiveDotState('transcribing');
       if (status === 'ready') setLiveDotState('idle');
       if (status === 'off') setLiveDotState('off');
@@ -1232,7 +1249,8 @@
     refreshWhisperModels();
   }
   function closeSettings() { saveSettings(); scrim.classList.add('hidden'); }
-  $('#more-btn').addEventListener('click', openSettings);
+  $('#more-btn').addEventListener('click', () => { void cue.settingsOpen(); });
+  cue.on('settings:open', openSettings);
   $('#s-close').addEventListener('click', () => { void closeSettings(); });
   scrim.addEventListener('click', (e) => { if (e.target === scrim) void closeSettings(); });
 
@@ -1593,16 +1611,6 @@
     if ((e.metaKey || e.ctrlKey) && e.key === ',') { e.preventDefault(); openSettings(); }
   });
 
-  // ---- click-through: only the UI blocks the mouse; empty gaps pass to your screen ----
-  let ignoring = null;
-  function setIgnore(v) { if (v !== ignoring) { ignoring = v; cue.setIgnoreMouse(v); } }
-  document.addEventListener('mousemove', (e) => {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const overUI = !!(el && el.closest && el.closest('#toolbar, #panel-wrap, #transcript-sidebar, #settings-scrim, #onboard-scrim, #consent-scrim'));
-    setIgnore(!overUI);
-  });
-  setIgnore(true); // start fully click-through; hovering the panel re-enables it
-
   // ---- assistant access request ------------------------------------------
   // Shown here rather than as a native dialog because cue hides its dock icon:
   // an OS panel from an accessory app never comes forward and cannot be
@@ -1625,9 +1633,6 @@
     $('#cs-body').textContent = request.detail;
     $('#cs-allow').textContent = request.allowLabel;
     consentScrim.classList.remove('hidden');
-    // Do not wait for a mousemove to turn the mouse back on: the pointer may
-    // already be still, and the sheet would be unclickable until it moved.
-    setIgnore(false);
     $('#cs-deny').focus();
   });
 
@@ -1700,7 +1705,7 @@
     $('#ob-next').textContent = obIndex === OB_STEPS.length - 1 ? 'Done' : 'Next';
     $('#ob-skip').style.visibility = obIndex === OB_STEPS.length - 1 ? 'hidden' : 'visible';
   }
-  function showOnboard() { obIndex = 0; renderOnboard(); obScrim.classList.remove('hidden'); setIgnore(false); }
+  function showOnboard() { obIndex = 0; renderOnboard(); obScrim.classList.remove('hidden'); }
   async function finishOnboard() {
     obScrim.classList.add('hidden');
     if (settings && !settings.onboarded) { settings.onboarded = true; await cue.settingsSet({ onboarded: true }); }
@@ -1747,9 +1752,8 @@
       placeholder.innerHTML = 'Ask about your screen or conversation, or <span class="keycap">Ctrl</span><span class="keycap">⏎</span> for Assist';
     }
 
-    const st = await cue.captureState();
-    $('#live-dot').classList.toggle('off', !st.active);
-    $('#stop-btn').classList.toggle('active', st.active);
+    const snapshot = await cue.sessionGetSnapshot();
+    applySessionSnapshot(snapshot);
     if (!settings.onboarded) showOnboard();
   })();
 })();
