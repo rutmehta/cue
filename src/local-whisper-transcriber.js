@@ -28,9 +28,11 @@ class LocalWhisperTranscriber {
     this.pendingJobs = 0;
     this.acceptingAudio = false;
     this.discardPendingJobs = false;
+    this.jobGeneration = 0;
   }
 
   async start() {
+    this.jobGeneration += 1;
     this.discardPendingJobs = false;
     await this.session.start();
     for (const channel of CHANNELS) {
@@ -65,6 +67,7 @@ class LocalWhisperTranscriber {
     const drained = await this._drainQueue();
     if (!drained) {
       this.discardPendingJobs = true;
+      this.jobGeneration += 1;
       this.session.abortInferences();
     }
     await this.session.stop({ force: !drained });
@@ -75,23 +78,27 @@ class LocalWhisperTranscriber {
   forceStop() {
     this.acceptingAudio = false;
     this.discardPendingJobs = true;
+    this.jobGeneration += 1;
     this.session.abortInferences();
     return this.session.stop({ force: true });
   }
 
   _enqueue(channel, pcm) {
+    const generation = this.jobGeneration;
     this.pendingJobs += 1;
     this.onStatus({ status: 'transcribing', channel, pending: this.pendingJobs });
 
     const job = this.queueTail.then(async () => {
-      if (this.discardPendingJobs) return;
+      if (this.discardPendingJobs || generation !== this.jobGeneration) return;
       const text = await this.session.transcribe(pcm);
-      if (text) this.onTranscript(channel, text);
+      if (!this.discardPendingJobs && generation === this.jobGeneration && text) {
+        this.onTranscript(channel, text);
+      }
     });
 
     this.queueTail = job
       .catch((error) => {
-        if (!this.discardPendingJobs) this.onError(error);
+        if (!this.discardPendingJobs && generation === this.jobGeneration) this.onError(error);
       })
       .finally(() => {
         this.pendingJobs -= 1;

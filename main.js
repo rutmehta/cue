@@ -18,7 +18,7 @@ const { SessionController } = require('./src/session-controller');
 const { createTrayController } = require('./src/tray-menu');
 const { resolveOverlayBounds, storeBoundsForDisplay } = require('./src/window-state');
 const { isOverlaySender, parseSourceUpdatePayload } = require('./src/source-update');
-const { batchStatusForResult, createLocalSttCallbackGate } = require('./src/stt-status-gate');
+const { batchStatusForResult, createBatchAttemptGate, createLocalSttCallbackGate } = require('./src/stt-status-gate');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -77,6 +77,7 @@ let activeWhisperModelId = null;
 let llmRequestSequence = 0;
 const localSttCallbackGate = createLocalSttCallbackGate();
 let localSttCallbackToken = null;
+const batchAttemptGate = createBatchAttemptGate();
 
 // -------- streaming STT state --------
 let streamingSTT = { you: null, them: null }; // streaming STT instances per channel
@@ -399,7 +400,10 @@ async function flushChannel(channel) {
       if (!sttDisabled) { sttDisabled = true; send('status', { message: 'No transcription key set. Add an OpenAI (Whisper), Deepgram, or Gemini key in Settings to enable listening. Screen/LeetCode features work without it.' }); }
       return;
     }
+    const attemptToken = batchAttemptGate.beginAttempt();
+    if (!attemptToken) return;
     const res = await stt.transcribe(pcm);
+    if (!batchAttemptGate.commit(attemptToken)) return;
     const batchStatus = batchStatusForResult(res);
     if (batchStatus) publishSttStatus(batchStatus.status, batchStatus.details);
     if (res.error) {
@@ -551,6 +555,7 @@ async function setCapturing(active) {
   if (active === state.capturing) return state.capturing;
 
   if (active) {
+    batchAttemptGate.beginCapture();
     sttDisabled = false; // reset on re-enable
     const settings = store.getSettings();
     if ((settings.sttProvider || 'auto') === 'local') {
@@ -601,6 +606,7 @@ async function setCapturing(active) {
   }
 
   state.capturing = false;
+  batchAttemptGate.invalidate();
   publishSttStatus('off', { patch: { activeEngine: null, model: null } });
   stopFlushLoop();
   stopStreamingSTT();
@@ -1060,6 +1066,7 @@ function cancelActiveDownload() {
 }
 
 async function stopLocalEngines() {
+  batchAttemptGate.invalidate();
   const stoppingCallbackToken = localSttCallbackToken;
   localSttCallbackGate.forceStop(stoppingCallbackToken);
   localSttCallbackToken = null;

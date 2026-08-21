@@ -2,6 +2,20 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { LocalWhisperTranscriber } = require('../src/local-whisper-transcriber');
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+function segmenterFactory(options) {
+  return {
+    push(pcm) { options.onUtterance(options.channel, Buffer.from(pcm)); },
+    stop() {}
+  };
+}
+
 test('serializes both channels through one persistent session', async () => {
   let activeInferences = 0;
   let maximumConcurrency = 0;
@@ -90,4 +104,66 @@ test('bounds shutdown drain time before aborting an in-flight inference', async 
   assert.equal(transcribeCalls, 1);
   assert.deepEqual(reportedErrors, []);
   assert.deepEqual(stopOptions, [{ force: true }]);
+});
+
+test('drops a delayed success after drain timeout even when the transcriber restarts', async () => {
+  const inference = deferred();
+  const transcripts = [];
+  let calls = 0;
+  const fakeSession = {
+    async start() {},
+    async transcribe() {
+      calls += 1;
+      return calls === 1 ? inference.promise : 'fresh transcript';
+    },
+    abortInferences() {},
+    async stop() {}
+  };
+  const transcriber = new LocalWhisperTranscriber({
+    sessionOptions: {},
+    sessionFactory: () => fakeSession,
+    segmenterFactory,
+    drainTimeoutMs: 0,
+    onTranscript: (channel, text) => transcripts.push({ channel, text })
+  });
+
+  await transcriber.start();
+  transcriber.push('you', Buffer.from('stale'));
+  await Promise.resolve();
+  await transcriber.stop();
+  await transcriber.start();
+  inference.resolve('stale transcript');
+  await transcriber.queueTail;
+  transcriber.push('them', Buffer.from('fresh'));
+  await transcriber.queueTail;
+
+  assert.deepEqual(transcripts, [{ channel: 'them', text: 'fresh transcript' }]);
+});
+
+test('drops a delayed failure after drain timeout even when the transcriber restarts', async () => {
+  const inference = deferred();
+  const errors = [];
+  const fakeSession = {
+    async start() {},
+    async transcribe() { return inference.promise; },
+    abortInferences() {},
+    async stop() {}
+  };
+  const transcriber = new LocalWhisperTranscriber({
+    sessionOptions: {},
+    sessionFactory: () => fakeSession,
+    segmenterFactory,
+    drainTimeoutMs: 0,
+    onError: (error) => errors.push(error)
+  });
+
+  await transcriber.start();
+  transcriber.push('you', Buffer.from('stale'));
+  await Promise.resolve();
+  await transcriber.stop();
+  await transcriber.start();
+  inference.reject(new Error('late failure'));
+  await transcriber.queueTail;
+
+  assert.deepEqual(errors, []);
 });

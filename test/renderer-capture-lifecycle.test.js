@@ -245,3 +245,33 @@ test('a throwing fallback observer cannot abort legacy graph recovery', async ()
   assert.strictEqual(graph.proc, processor);
   assert.equal(closed, 0);
 });
+
+test('an asynchronously rejecting fallback observer is consumed without aborting recovery', async () => {
+  let rejectionObserved = false;
+  const context = {
+    audioWorklet: { addModule: async () => { throw new Error('worklet unavailable'); } },
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => ({ connect() {}, disconnect() {} }),
+    createGain: () => ({ gain: {}, connect() {}, disconnect() {} }),
+    async close() {}
+  };
+  const rejectingThenable = {
+    then(_resolve, reject) {
+      rejectionObserved = true;
+      reject(new Error('async diagnostic observer failed'));
+    }
+  };
+
+  const graph = await createAudioCaptureGraph({
+    audioContext: context,
+    mediaStream: {},
+    WorkletNode: function WorkletNode() {},
+    onPcm() {},
+    onWorkletFallback: () => rejectingThenable
+  });
+  await new Promise(setImmediate);
+
+  assert.equal(graph._legacy, true);
+  assert.equal(rejectionObserved, true, 'observer thenable must be adopted so rejection is consumed');
+});

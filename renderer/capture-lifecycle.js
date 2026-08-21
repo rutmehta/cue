@@ -128,7 +128,9 @@
       await audioContext.audioWorklet.addModule('audio-worklet-processor.js');
       return connectAudioWorklet({ audioContext, mediaStream, WorkletNode, onPcm });
     } catch (workletError) {
-      try { onWorkletFallback(workletError); } catch (_) { /* diagnostics cannot own capture cleanup */ }
+      try {
+        Promise.resolve(onWorkletFallback(workletError)).catch(() => {});
+      } catch (_) { /* diagnostics cannot own capture cleanup */ }
       try {
         return connectScriptProcessor({ audioContext, mediaStream, onPcm });
       } catch (fallbackError) {

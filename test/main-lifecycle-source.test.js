@@ -75,6 +75,10 @@ test('renderer source lifecycle and main STT/settings/clear paths update the con
   assert.match(mainSource, /batchStatusForResult\(res\)/);
   assert.match(mainSource, /beginGracefulStop\(/);
   assert.match(mainSource, /finishGracefulStop\(/);
+  assert.match(mainSource, /batchAttemptGate\.beginCapture\(\)/);
+  assert.match(mainSource, /batchAttemptGate\.beginAttempt\(\)/);
+  assert.match(mainSource, /batchAttemptGate\.commit\(/);
+  assert.match(mainSource, /batchAttemptGate\.invalidate\(\)/);
 });
 
 test('renderer consumes one authoritative snapshot stream and explicit window commands', () => {

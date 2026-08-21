@@ -252,3 +252,55 @@ Results:
 The final paths distinguish failure from configuration, graceful drain from forced cancellation, selected-question category input from transcript attribution, and diagnostics from graph ownership. No new Electron or import-time side effects were introduced; both new STT decisions remain pure and deterministically tested.
 
 The local drain regression is covered by the pure callback lifecycle plus the existing real `LocalWhisperTranscriber` drain tests, using an injected in-memory session rather than a Whisper process. Audio graph recovery likewise uses deterministic nodes. Physical media devices, native Whisper shutdown, and OS permission UI remain release-smoke concerns.
+
+## Review Round 4
+
+The scoped re-review of Round 3 found three stale-work boundaries: unordered batch completions could overwrite newer terminal state or publish after stop, a timeout-abandoned local inference could publish after restart, and asynchronous fallback-observer rejection was not consumed. This round adds explicit epochs/generations at every asynchronous commit boundary.
+
+### Round 4 RED evidence
+
+The pre-implementation regression command was:
+
+```sh
+node --test test/stt-status-gate.test.js test/main-lifecycle-source.test.js test/local-whisper-transcriber.test.js test/renderer-capture-lifecycle.test.js
+```
+
+It exited 1 with **22 passed and 6 failed**:
+
+1. The batch-attempt probe found no capture/attempt gate, the main integration probe found no begin/commit/invalidate wiring, and failure-detail normalization exposed an undefined 500-character bound. The scenarios commit a newer failure before an older success, stop with an attempt pending, and restart before the stale epoch completes.
+2. Two deferred local Whisper probes timed out an inference whose abort deliberately did nothing, restarted the transcriber, and then resolved or rejected the old job. The old success was published alongside the fresh transcript, and the old failure reached `onError`.
+3. The fallback observer returned a rejecting thenable. ScriptProcessor recovery succeeded, but the thenable was never adopted, proving its rejection had no attached consumer.
+
+Each group then completed an isolated RED/GREEN cycle: the batch ordering/detail and main-source probes, both delayed local completion probes, and the asynchronous observer probe passed separately before combined verification.
+
+### Round 4 GREEN implementation
+
+- Added one process-wide batch attempt gate with monotonically increasing attempts and distinct capture epochs. Capture start opens a new epoch; normal stop and force-stop invalidate it. `flushChannel()` obtains a token before transcription and atomically commits it before publishing status, handling errors, or publishing transcript. A completion from an invalidated epoch or older than the latest committed attempt returns without changing the authoritative snapshot or transcript.
+- Batch error detail now accepts only non-empty string content, trims it, and bounds it to 500 characters. Null, blank, boolean, object, and missing provider messages use the fixed actionable fallback `Speech-to-text providers failed.`
+- `LocalWhisperTranscriber` now generation-tags every queued job. Start, timeout abandonment, and force-stop advance the generation. Jobs recheck both discard state and generation after `await session.transcribe()`, and the error path performs the same generation check. A delayed abort-ignoring success or failure therefore cannot escape into a restarted session, while a genuinely completed graceful drain still publishes normally.
+- Audio fallback diagnostics now pass through `Promise.resolve(...).catch(() => {})` inside the existing synchronous guard. Synchronous throws and asynchronous/thenable rejections are both best-effort, are not awaited, and cannot interrupt ScriptProcessor recovery or terminal context cleanup.
+
+### Round 4 verification
+
+Final verification commands:
+
+```sh
+node --test test/stt-status-gate.test.js test/main-lifecycle-source.test.js test/stt.test.js test/local-whisper-transcriber.test.js test/renderer-capture-lifecycle.test.js test/session-state.test.js test/session-controller.test.js
+npm test
+for cue_file in main.js renderer/capture-lifecycle.js src/local-whisper-transcriber.js src/stt-status-gate.js test/local-whisper-transcriber.test.js test/main-lifecycle-source.test.js test/renderer-capture-lifecycle.test.js test/stt-status-gate.test.js; do node --check "$cue_file" || exit 1; done
+ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron --check main.js
+git diff --check -- . ':(exclude)package-lock.json'
+```
+
+Results:
+
+- Focused impacted tests: **45 passed, 0 failed**.
+- Full suite: **212 passed, 0 failed, 0 cancelled/skipped/todo**; ordinary `npm test` exited normally without retained timer/process handles.
+- Node syntax, Electron's Node-runtime `main.js` parse, and tracked whitespace checks exited 0.
+- The user-modified `package-lock.json` and untracked `index.cjs`, `index.js`, and `main-CLCIkAdW.js` remain outside the commit.
+
+### Round 4 self-review and concerns
+
+The final batch commit point guards status, error side effects, and transcript together, rather than protecting only presentation metadata. Stop and restart both invalidate pending work. Local jobs validate after the provider await and error catch, covering success, failure, timeout, force-stop, and later generation reuse. Fallback notification remains non-blocking while every rejection is consumed.
+
+The ordering and delayed-completion tests are deterministic and network-free. Native provider cancellation, real Whisper processes that ignore abort, and browser AudioContext behavior remain target-runtime smoke-test concerns, but stale commits no longer depend on cancellation succeeding.
