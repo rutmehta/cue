@@ -8,9 +8,8 @@ class LocalSttError extends Error {
   }
 }
 
-class InspectionSchemaError extends TypeError {}
-
 const MISSING = Symbol('missing');
+const CONTROLLED_ERRORS = new WeakSet();
 const MAX_DETAIL_DEPTH = 32;
 const MAX_DETAIL_NODES = 1000;
 const MAX_DETAIL_ARRAY_LENGTH = 256;
@@ -33,7 +32,9 @@ const RUNTIME_FIELDS = new Set(['path', 'source', 'version']);
 const MODEL_FIELDS = new Set(['path', 'source', 'fingerprint']);
 
 function fail(message) {
-  throw new InspectionSchemaError(message);
+  const error = new TypeError(message);
+  CONTROLLED_ERRORS.add(error);
+  throw error;
 }
 
 function reflectionFailure() {
@@ -70,6 +71,39 @@ function safeIsArray(value) {
   } catch {
     reflectionFailure();
   }
+}
+
+function defineOwnDataProperty(value, key, data) {
+  try {
+    Object.defineProperty(value, key, {
+      value: data,
+      writable: true,
+      enumerable: true,
+      configurable: true
+    });
+  } catch {
+    reflectionFailure();
+  }
+}
+
+function appendOwnArrayValue(value, data) {
+  const lengthDescriptor = safeDescriptor(value, 'length');
+  if (!lengthDescriptor || !hasOwn(lengthDescriptor, 'value') || !Number.isSafeInteger(lengthDescriptor.value)) {
+    reflectionFailure();
+  }
+  const index = lengthDescriptor.value;
+  defineOwnDataProperty(value, String(index), data);
+  try {
+    Object.defineProperty(value, 'length', { value: index + 1 });
+  } catch {
+    reflectionFailure();
+  }
+}
+
+function ownRecord(entries) {
+  const record = {};
+  for (const [key, value] of entries) defineOwnDataProperty(record, key, value);
+  return record;
 }
 
 function hasOwn(value, key) {
@@ -170,7 +204,7 @@ function cloneErrorDetails(value, state, depth = 0) {
       }
       const clone = [];
       for (let index = 0; index < length; index += 1) {
-        clone.push(cloneErrorDetails(ownDataProperty(value, String(index), invalidErrorDetails, true), state, depth + 1));
+        appendOwnArrayValue(clone, cloneErrorDetails(ownDataProperty(value, String(index), invalidErrorDetails, true), state, depth + 1));
       }
       return clone;
     }
@@ -184,7 +218,7 @@ function cloneErrorDetails(value, state, depth = 0) {
       const descriptor = safeDescriptor(value, key);
       if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) invalidErrorDetails();
       const copiedKey = addText(key, MAX_DETAIL_KEY_CHARS, state, invalidErrorDetails);
-      clone[copiedKey] = cloneErrorDetails(descriptor.value, state, depth + 1);
+      defineOwnDataProperty(clone, copiedKey, cloneErrorDetails(descriptor.value, state, depth + 1));
     }
     return clone;
   } finally {
@@ -198,11 +232,11 @@ function normalizeInspectionError(error, state) {
   const message = addText(ownDataProperty(error, 'message', invalidInspectionErrorFields, true), MAX_ERROR_MESSAGE_CHARS, state, invalidInspectionErrorFields);
   const action = addText(ownDataProperty(error, 'action', invalidInspectionErrorFields, true), MAX_ERROR_ACTION_CHARS, state, invalidInspectionErrorFields);
   if (!code) fail('Each inspection error requires string code, message, and action fields.');
-  const normalized = { code, message, action };
+  const normalized = ownRecord([['code', code], ['message', message], ['action', action]]);
   const details = safeDescriptor(error, 'details');
   if (details) {
     if (!hasOwn(details, 'value')) invalidInspectionErrorFields();
-    normalized.details = cloneErrorDetails(details.value, state);
+    defineOwnDataProperty(normalized, 'details', cloneErrorDetails(details.value, state));
   }
   return normalized;
 }
@@ -218,7 +252,7 @@ function normalizeInspectionErrors(value, state) {
   }
   const errors = [];
   for (let index = 0; index < length; index += 1) {
-    errors.push(normalizeInspectionError(ownDataProperty(value, String(index), invalidInspectionErrors, true), state));
+    appendOwnArrayValue(errors, normalizeInspectionError(ownDataProperty(value, String(index), invalidInspectionErrors, true), state));
   }
   return errors;
 }
@@ -226,7 +260,9 @@ function normalizeInspectionErrors(value, state) {
 function readAssetPath(value, state, invalid) {
   const path = ownDataProperty(value, 'path', invalid);
   if (path === MISSING || path === undefined || path === null) return null;
-  return addText(path, MAX_PATH_CHARS, state, invalid);
+  const normalized = addText(path, MAX_PATH_CHARS, state, invalid);
+  if (!normalized.trim() || normalized.includes('\u0000')) invalid();
+  return normalized;
 }
 
 function readAssetSource(value, state, invalid) {
@@ -246,11 +282,11 @@ function normalizeRuntime(value, state) {
   if (value === undefined) runtimeSchemaFailure();
   assertPlainObject(value, runtimeSchemaFailure);
   assertDocumentedFields(value, RUNTIME_FIELDS, runtimeSchemaFailure);
-  return {
-    path: readAssetPath(value, state, runtimeSchemaFailure),
-    source: readAssetSource(value, state, runtimeSchemaFailure),
-    version: readAssetText(value, 'version', MAX_VERSION_CHARS, state, runtimeSchemaFailure)
-  };
+  return ownRecord([
+    ['path', readAssetPath(value, state, runtimeSchemaFailure)],
+    ['source', readAssetSource(value, state, runtimeSchemaFailure)],
+    ['version', readAssetText(value, 'version', MAX_VERSION_CHARS, state, runtimeSchemaFailure)]
+  ]);
 }
 
 function normalizeModel(value, state) {
@@ -258,11 +294,11 @@ function normalizeModel(value, state) {
   if (value === undefined) modelSchemaFailure();
   assertPlainObject(value, modelSchemaFailure);
   assertDocumentedFields(value, MODEL_FIELDS, modelSchemaFailure);
-  return {
-    path: readAssetPath(value, state, modelSchemaFailure),
-    source: readAssetSource(value, state, modelSchemaFailure),
-    fingerprint: readAssetText(value, 'fingerprint', MAX_FINGERPRINT_CHARS, state, modelSchemaFailure)
-  };
+  return ownRecord([
+    ['path', readAssetPath(value, state, modelSchemaFailure)],
+    ['source', readAssetSource(value, state, modelSchemaFailure)],
+    ['fingerprint', readAssetText(value, 'fingerprint', MAX_FINGERPRINT_CHARS, state, modelSchemaFailure)]
+  ]);
 }
 
 function normalizeEngineInspection(value) {
@@ -286,9 +322,9 @@ function normalizeEngineInspection(value) {
       fail('A healthy engine inspection requires runtime and model paths.');
     }
     if (healthy && errors.length > 0) fail('A healthy engine inspection cannot contain errors.');
-    return { id, healthy, runtime, model, errors };
+    return ownRecord([['id', id], ['healthy', healthy], ['runtime', runtime], ['model', model], ['errors', errors]]);
   } catch (error) {
-    if (error instanceof InspectionSchemaError) throw error;
+    if (error && (typeof error === 'object' || typeof error === 'function') && CONTROLLED_ERRORS.has(error)) throw error;
     reflectionFailure();
   }
 }

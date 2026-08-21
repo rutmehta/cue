@@ -305,6 +305,144 @@ test('converts hostile proxy reflection failures into controlled TypeErrors', ()
   }
 });
 
+test('uses own data properties so prototype setters cannot observe normalized output', () => {
+  const input = {
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+    errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: { probe: ['value'] } }]
+  };
+  const cases = [
+    [Object.prototype, 'probe', false],
+    [Object.prototype, 'probe', true],
+    [Array.prototype, '0', false],
+    [Array.prototype, '0', true]
+  ];
+  for (const [prototype, key, shouldThrow] of cases) {
+    const previous = Object.getOwnPropertyDescriptor(prototype, key);
+    let calls = 0;
+    let output;
+    Object.defineProperty(prototype, key, {
+      configurable: true,
+      set() {
+        calls += 1;
+        if (shouldThrow) throw new Error('prototype setter invoked');
+      }
+    });
+    try {
+      output = normalizeEngineInspection(input);
+    } finally {
+      if (previous) Object.defineProperty(prototype, key, previous);
+      else delete prototype[key];
+    }
+    assert.equal(calls, 0, `${prototype === Object.prototype ? 'Object' : 'Array'} ${key}`);
+    assert.deepEqual(output.errors[0].details, { probe: ['value'] });
+    assert.deepEqual(JSON.parse(JSON.stringify(output)), output);
+    assert.deepEqual(structuredClone(output), output);
+  }
+});
+
+test('stays side-effect free when source descriptor traps install prototype setters', () => {
+  const expected = {
+    id: 'parakeet', healthy: false,
+    runtime: { path: '/bin/p', source: 'unknown', version: null },
+    model: { path: '/models/p', source: 'unknown', fingerprint: null },
+    errors: [{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: { probe: ['value'] } }]
+  };
+  const cases = [
+    [Object.prototype, 'probe', false, (install) => ({
+      id: 'parakeet', healthy: false,
+      runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+      errors: [{
+        code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.',
+        details: new Proxy({ probe: ['value'] }, {
+          getOwnPropertyDescriptor(target, key) {
+            if (key === 'probe') install();
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          }
+        })
+      }]
+    })],
+    [Object.prototype, 'probe', true, (install) => ({
+      id: 'parakeet', healthy: false,
+      runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+      errors: [{
+        code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.',
+        details: new Proxy({ probe: ['value'] }, {
+          getOwnPropertyDescriptor(target, key) {
+            if (key === 'probe') install();
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          }
+        })
+      }]
+    })],
+    [Array.prototype, '0', false, (install) => ({
+      id: 'parakeet', healthy: false,
+      runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+      errors: new Proxy([{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: { probe: ['value'] } }], {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === '0') install();
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        }
+      })
+    })],
+    [Array.prototype, '0', true, (install) => ({
+      id: 'parakeet', healthy: false,
+      runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+      errors: new Proxy([{ code: 'model_incomplete', message: 'Incomplete.', action: 'Repair.', details: { probe: ['value'] } }], {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === '0') install();
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        }
+      })
+    })]
+  ];
+  for (const [prototype, key, shouldThrow, createInput] of cases) {
+    const previous = Object.getOwnPropertyDescriptor(prototype, key);
+    let calls = 0;
+    const install = () => Object.defineProperty(prototype, key, {
+      configurable: true,
+      set() {
+        calls += 1;
+        if (shouldThrow) throw new Error('descriptor-installed setter invoked');
+      }
+    });
+    let output;
+    try {
+      output = normalizeEngineInspection(createInput(install));
+    } finally {
+      if (previous) Object.defineProperty(prototype, key, previous);
+      else delete prototype[key];
+    }
+    assert.equal(calls, 0, `${prototype === Object.prototype ? 'Object' : 'Array'} ${key}`);
+    assert.deepEqual(output, expected);
+    assert.deepEqual(JSON.parse(JSON.stringify(output)), output);
+    assert.deepEqual(structuredClone(output), output);
+  }
+});
+
+test('requires usable runtime and model filesystem paths while preserving legitimate spaces', () => {
+  const base = { id: 'parakeet', errors: [] };
+  for (const asset of ['runtime', 'model']) {
+    for (const path of ['', ' \t\n ', '/models\u0000bad']) {
+      const inspection = {
+        ...base,
+        runtime: { path: '/bin/p' }, model: { path: '/models/p' },
+        [asset]: { path }
+      };
+      assert.throws(() => normalizeEngineInspection(inspection), /runtime|model|path/i);
+      assert.equal(isHealthyInspection(inspection), false);
+    }
+  }
+  const spaced = normalizeEngineInspection({
+    ...base,
+    runtime: { path: ' /Applications/OpenWhispr.app/Contents/Resources/bin/runtime ' },
+    model: { path: '/models/parakeet tdt ' }
+  });
+  assert.equal(spaced.healthy, true);
+  assert.equal(spaced.runtime.path, ' /Applications/OpenWhispr.app/Contents/Resources/bin/runtime ');
+  assert.equal(spaced.model.path, '/models/parakeet tdt ');
+});
+
 test('rejects malformed healthy and errors fields instead of coercing them', () => {
   const assets = { id: 'parakeet', runtime: { path: '/bin/p' }, model: { path: '/models/p' } };
   for (const healthy of [undefined, null, 'false', 0, 1, {}, []]) {

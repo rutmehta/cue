@@ -54,3 +54,11 @@
 - Wrapped reflection and proxy failures as controlled `TypeError`s, retaining no proxy or caller-owned references in successful results.
 - RED verification: whole-inspection safety, text-budget, and hostile-proxy tests failed before schema bounding was implemented.
 - Post-review verification: 23 focused tests and 251 full-suite tests pass.
+
+## Review Round 5
+
+- Replaced clone/output assignments and array pushes with guarded `Object.defineProperty` own-data writes, including explicit index and length updates for normalized arrays.
+- Replaced the outer `instanceof` check with an internal `WeakSet` of controlled errors so hostile thrown values cannot affect error classification.
+- Runtime and model paths now reject empty, whitespace-only, and NUL-containing strings. Paths with legitimate interior or boundary spaces remain unchanged and valid.
+- RED verification: prototype-setter and path-validity regressions failed before the side-effect-free writes and path checks were implemented; descriptor-trap-installed throwing/nonthrowing setters then verified the hardened output path.
+- Post-review verification: 26 focused tests and 254 full-suite tests pass.
