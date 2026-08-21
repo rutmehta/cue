@@ -55,20 +55,20 @@ test('batch attempts reject stale completion across ordering, stop, and restart 
   assert.equal(typeof createBatchAttemptGate, 'function');
   const gate = createBatchAttemptGate();
   gate.beginCapture();
-  const older = gate.beginAttempt();
-  const newer = gate.beginAttempt();
+  const older = gate.beginAttempt('you');
+  const newer = gate.beginAttempt('you');
 
-  assert.equal(gate.commit(newer), true);
-  assert.equal(gate.commit(older), false, 'older success cannot replace a newer committed error');
+  assert.deepEqual(gate.commit(newer), { effects: true, transcript: true });
+  assert.deepEqual(gate.commit(older), { effects: false, transcript: false }, 'older same-channel success cannot replace a newer committed error');
 
-  const stopping = gate.beginAttempt();
+  const stopping = gate.beginAttempt('them');
   gate.invalidate();
-  assert.equal(gate.commit(stopping), false, 'a completion after stop cannot publish');
+  assert.deepEqual(gate.commit(stopping), { effects: false, transcript: false }, 'a completion after stop cannot publish');
 
   gate.beginCapture();
-  const restarted = gate.beginAttempt();
-  assert.equal(gate.commit(restarted), true);
-  assert.equal(gate.commit(stopping), false, 'a prior capture epoch cannot publish after restart');
+  const restarted = gate.beginAttempt('you');
+  assert.deepEqual(gate.commit(restarted), { effects: true, transcript: true });
+  assert.deepEqual(gate.commit(stopping), { effects: false, transcript: false }, 'a prior capture epoch cannot publish after restart');
 });
 
 test('batch failure detail is normalized to bounded useful text', () => {
@@ -80,4 +80,28 @@ test('batch failure detail is normalized to bounded useful text', () => {
   const detail = batchStatusForResult({ error: { message: `  ${'x'.repeat(700)}  ` } }).details.detail;
   assert.equal(detail.length, MAX_STT_DETAIL_CHARS);
   assert.equal(detail, 'x'.repeat(MAX_STT_DETAIL_CHARS));
+});
+
+test('batch effect ordering does not discard another channel transcript in the same epoch', () => {
+  const gate = createBatchAttemptGate();
+  gate.beginCapture();
+  const olderYou = gate.beginAttempt('you');
+  const newerThem = gate.beginAttempt('them');
+
+  assert.deepEqual(gate.commit(newerThem), { effects: true, transcript: true });
+  assert.deepEqual(gate.commit(olderYou), { effects: false, transcript: true });
+});
+
+test('batch attempt ordering stays unique beyond Number.MAX_SAFE_INTEGER', () => {
+  const gate = createBatchAttemptGate({ initialAttempt: BigInt(Number.MAX_SAFE_INTEGER) - 1n });
+  gate.beginCapture();
+  const beforeBoundary = gate.beginAttempt('you');
+  const afterBoundary = gate.beginAttempt('them');
+
+  assert.equal(beforeBoundary.attempt, BigInt(Number.MAX_SAFE_INTEGER));
+  assert.equal(afterBoundary.attempt, BigInt(Number.MAX_SAFE_INTEGER) + 1n);
+  assert.strictEqual(beforeBoundary.epoch, afterBoundary.epoch);
+  assert.notEqual(typeof beforeBoundary.epoch, 'number');
+  assert.deepEqual(gate.commit(afterBoundary), { effects: true, transcript: true });
+  assert.deepEqual(gate.commit(beforeBoundary), { effects: false, transcript: true });
 });

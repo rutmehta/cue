@@ -167,3 +167,42 @@ test('drops a delayed failure after drain timeout even when the transcriber rest
 
   assert.deepEqual(errors, []);
 });
+
+test('restart detaches fresh work from an abort-ignoring abandoned queue', async () => {
+  const staleInference = deferred();
+  const transcripts = [];
+  const statuses = [];
+  const fakeSession = {
+    async start() {},
+    async transcribe(pcm) {
+      return pcm.toString() === 'stale' ? staleInference.promise : 'fresh transcript';
+    },
+    abortInferences() {},
+    async stop() {}
+  };
+  const transcriber = new LocalWhisperTranscriber({
+    sessionOptions: {},
+    sessionFactory: () => fakeSession,
+    segmenterFactory,
+    drainTimeoutMs: 0,
+    onTranscript: (channel, text) => transcripts.push({ channel, text }),
+    onStatus: (status) => statuses.push(status.status)
+  });
+
+  await transcriber.start();
+  transcriber.push('you', Buffer.from('stale'));
+  await Promise.resolve();
+  await transcriber.stop();
+  await transcriber.start();
+  transcriber.push('them', Buffer.from('fresh'));
+  const freshOutcome = await Promise.race([
+    transcriber.queueTail.then(() => 'completed'),
+    new Promise((resolve) => setImmediate(() => resolve('blocked')))
+  ]);
+  staleInference.resolve('stale transcript');
+  await new Promise(setImmediate);
+
+  assert.equal(freshOutcome, 'completed');
+  assert.deepEqual(transcripts, [{ channel: 'them', text: 'fresh transcript' }]);
+  assert.equal(statuses.filter((status) => status === 'ready').length, 1);
+});

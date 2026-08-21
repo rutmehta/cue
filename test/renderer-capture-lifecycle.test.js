@@ -275,3 +275,36 @@ test('an asynchronously rejecting fallback observer is consumed without aborting
   assert.equal(graph._legacy, true);
   assert.equal(rejectionObserved, true, 'observer thenable must be adopted so rejection is consumed');
 });
+
+test('observer rejection handling never reads a result-controlled catch accessor', async () => {
+  let catchAccesses = 0;
+  const rejectedObserver = Promise.reject(new Error('diagnostic rejection'));
+  Promise.prototype.then.call(rejectedObserver, undefined, () => {});
+  Object.defineProperty(rejectedObserver, 'catch', {
+    configurable: true,
+    get() {
+      catchAccesses += 1;
+      throw new Error('hostile catch accessor');
+    }
+  });
+  const context = {
+    audioWorklet: { addModule: async () => { throw new Error('worklet unavailable'); } },
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => ({ connect() {}, disconnect() {} }),
+    createGain: () => ({ gain: {}, connect() {}, disconnect() {} }),
+    async close() {}
+  };
+
+  const graph = await createAudioCaptureGraph({
+    audioContext: context,
+    mediaStream: {},
+    WorkletNode: function WorkletNode() {},
+    onPcm() {},
+    onWorkletFallback: () => rejectedObserver
+  });
+  await new Promise(setImmediate);
+
+  assert.equal(graph._legacy, true);
+  assert.equal(catchAccesses, 0);
+});

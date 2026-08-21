@@ -76,7 +76,7 @@ test('renderer source lifecycle and main STT/settings/clear paths update the con
   assert.match(mainSource, /beginGracefulStop\(/);
   assert.match(mainSource, /finishGracefulStop\(/);
   assert.match(mainSource, /batchAttemptGate\.beginCapture\(\)/);
-  assert.match(mainSource, /batchAttemptGate\.beginAttempt\(\)/);
+  assert.match(mainSource, /batchAttemptGate\.beginAttempt\(channel\)/);
   assert.match(mainSource, /batchAttemptGate\.commit\(/);
   assert.match(mainSource, /batchAttemptGate\.invalidate\(\)/);
 });

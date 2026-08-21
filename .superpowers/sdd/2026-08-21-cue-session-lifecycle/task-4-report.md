@@ -304,3 +304,56 @@ Results:
 The final batch commit point guards status, error side effects, and transcript together, rather than protecting only presentation metadata. Stop and restart both invalidate pending work. Local jobs validate after the provider await and error catch, covering success, failure, timeout, force-stop, and later generation reuse. Fallback notification remains non-blocking while every rejection is consumed.
 
 The ordering and delayed-completion tests are deterministic and network-free. Native provider cancellation, real Whisper processes that ignore abort, and browser AudioContext behavior remain target-runtime smoke-test concerns, but stale commits no longer depend on cancellation succeeding.
+
+## Review Round 5
+
+The scoped re-review of Round 4 exposed four isolation boundaries: one channel's newer batch result suppressed another channel's valid transcript, a timeout-abandoned local queue blocked fresh-generation work, a hostile promise `catch` accessor escaped best-effort diagnostic handling, and numeric attempt identifiers could alias after the safe-integer boundary. This round separates transcript eligibility from authoritative effect ordering and gives every asynchronous owner a non-reusable generation identity.
+
+### Round 5 RED evidence
+
+The pre-implementation regression command was:
+
+```sh
+node --test test/stt-status-gate.test.js test/local-whisper-transcriber.test.js test/renderer-capture-lifecycle.test.js
+```
+
+It exited 1 with **20 passed and 4 failed**:
+
+1. The cross-channel gate probe committed a newer `them` result before an older `you` result. The older result was rejected wholesale instead of retaining transcript eligibility while yielding the global status effect.
+2. The overflow probe initialized immediately below `Number.MAX_SAFE_INTEGER`; attempts restarted at the old numeric value rather than remaining unique across the boundary.
+3. The local Whisper probe timed out an abort-ignoring stale inference, restarted the same transcriber, and queued fresh audio. The fresh job remained blocked behind the old queue instead of completing on the next turn.
+4. The capture diagnostic probe returned a rejected native promise with an own throwing `catch` accessor. Recovery built the fallback graph, but observer handling read the hostile accessor once instead of attaching rejection handling through intrinsic promise machinery.
+
+Each regression then passed in isolation before the combined focused and full-suite verification.
+
+### Round 5 GREEN implementation
+
+- The batch gate now issues an opaque `Symbol` capture epoch and `BigInt` attempt sequence. It tracks the latest authoritative status/error effect globally while tracking transcript eligibility independently per channel. A newer result from the opposite channel can therefore own session metadata without deleting valid in-epoch speech; same-channel older work and every invalidated-epoch completion remain rejected.
+- Main supplies the channel when beginning an attempt and applies the gate's two decisions independently: status and error handling require effect ownership, while validated transcript publication requires channel transcript ownership. A result with neither permission exits before any side effect.
+- `LocalWhisperTranscriber` owns a separate queue state for every start generation. Timeout and force-stop abandon the captured queue without reusing its tail; a restart immediately installs a fresh tail and pending count. Old promises retain rejection/finally consumers, but generation, queue identity, and abandoned-state checks prevent stale transcripts, errors, or `ready` status from entering the new session.
+- Fallback-observer results are assimilated into a guaranteed fresh native promise, and rejection handling is attached with `Promise.prototype.then.call`. The code never consults result-controlled `catch` or `then` properties directly, does not await diagnostics, and preserves ScriptProcessor recovery and terminal cleanup.
+
+### Round 5 verification
+
+Final verification commands:
+
+```sh
+node --test test/stt-status-gate.test.js test/main-lifecycle-source.test.js test/stt.test.js test/local-whisper-transcriber.test.js test/renderer-capture-lifecycle.test.js test/session-state.test.js test/session-controller.test.js
+npm test
+for cue_file in main.js renderer/capture-lifecycle.js src/local-whisper-transcriber.js src/stt-status-gate.js test/local-whisper-transcriber.test.js test/main-lifecycle-source.test.js test/renderer-capture-lifecycle.test.js test/stt-status-gate.test.js; do node --check "$cue_file" || exit 1; done
+ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron --check main.js
+git diff --check -- . ':(exclude)package-lock.json'
+```
+
+Results:
+
+- Focused impacted tests: **49 passed, 0 failed**.
+- Full suite: **216 passed, 0 failed, 0 cancelled/skipped/todo**; ordinary `npm test` exited normally in 148 ms without retained timer/process handles.
+- Node syntax, Electron's Node-runtime `main.js` parse, and tracked whitespace checks exited 0.
+- The user-modified `package-lock.json` and untracked `index.cjs`, `index.js`, and `main-CLCIkAdW.js` remain outside the commit.
+
+### Round 5 self-review and concerns
+
+Every reviewer boundary was rechecked against the final commit path: global status ordering cannot suppress an opposite-channel transcript, invalid epochs and same-channel stale work remain closed, restart progress no longer depends on abandoned inference settlement, stale queue finalizers cannot publish into the new generation, diagnostic assimilation avoids result-owned continuation methods, and attempt identity does not reuse JavaScript numbers.
+
+The concurrency regressions are deterministic and use deferred in-memory providers; the audio probe uses fake graph nodes. Real provider cancellation, native Whisper process behavior, and Electron AudioContext fallback remain target-runtime smoke-test concerns, but correctness no longer relies on cancellation or observer cooperation.

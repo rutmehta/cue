@@ -400,17 +400,18 @@ async function flushChannel(channel) {
       if (!sttDisabled) { sttDisabled = true; send('status', { message: 'No transcription key set. Add an OpenAI (Whisper), Deepgram, or Gemini key in Settings to enable listening. Screen/LeetCode features work without it.' }); }
       return;
     }
-    const attemptToken = batchAttemptGate.beginAttempt();
+    const attemptToken = batchAttemptGate.beginAttempt(channel);
     if (!attemptToken) return;
     const res = await stt.transcribe(pcm);
-    if (!batchAttemptGate.commit(attemptToken)) return;
+    const commit = batchAttemptGate.commit(attemptToken);
+    if (!commit.effects && !commit.transcript) return;
     const batchStatus = batchStatusForResult(res);
-    if (batchStatus) publishSttStatus(batchStatus.status, batchStatus.details);
+    if (commit.effects && batchStatus) publishSttStatus(batchStatus.status, batchStatus.details);
     if (res.error) {
-      handleSttError(res.error, settings);
+      if (commit.effects) handleSttError(res.error, settings);
       return;
     }
-    if (res.text && res.text.trim() && res.text.trim().length > 1 && !/^[?!.,;:\-…]+$/.test(res.text.trim())) {
+    if (commit.transcript && res.text && res.text.trim() && res.text.trim().length > 1 && !/^[?!.,;:\-…]+$/.test(res.text.trim())) {
       publishTranscript(channel, res.text);
     }
   } catch (e) {

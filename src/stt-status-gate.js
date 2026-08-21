@@ -37,34 +37,41 @@ function batchStatusForResult(result) {
   return null;
 }
 
-function createBatchAttemptGate() {
-  let epoch = 0;
-  let sequence = 0;
-  let latestCommittedAttempt = 0;
-  let active = false;
+function createBatchAttemptGate({ initialAttempt = 0n } = {}) {
+  if (typeof initialAttempt !== 'bigint' || initialAttempt < 0n) {
+    throw new TypeError('initialAttempt must be a non-negative bigint.');
+  }
+  let epoch = null;
+  let sequence = initialAttempt;
+  let latestEffectAttempt = initialAttempt;
+  let latestTranscriptAttempt = new Map();
 
   return {
     beginCapture() {
-      epoch += 1;
-      latestCommittedAttempt = 0;
-      active = true;
+      epoch = Symbol('batch-capture');
+      sequence = initialAttempt;
+      latestEffectAttempt = initialAttempt;
+      latestTranscriptAttempt = new Map();
     },
     invalidate() {
-      epoch += 1;
-      latestCommittedAttempt = 0;
-      active = false;
+      epoch = null;
+      latestTranscriptAttempt = new Map();
     },
-    beginAttempt() {
-      if (!active) return null;
-      sequence += 1;
-      return { epoch, attempt: sequence };
+    beginAttempt(channel) {
+      if (!epoch || (channel !== 'you' && channel !== 'them')) return null;
+      sequence += 1n;
+      return { epoch, attempt: sequence, channel };
     },
     commit(token) {
-      if (!active || !token || token.epoch !== epoch || token.attempt <= latestCommittedAttempt) {
-        return false;
+      if (!epoch || !token || token.epoch !== epoch || (token.channel !== 'you' && token.channel !== 'them')) {
+        return { effects: false, transcript: false };
       }
-      latestCommittedAttempt = token.attempt;
-      return true;
+      const effects = token.attempt > latestEffectAttempt;
+      if (effects) latestEffectAttempt = token.attempt;
+      const channelAttempt = latestTranscriptAttempt.get(token.channel) || initialAttempt;
+      const transcript = token.attempt > channelAttempt;
+      if (transcript) latestTranscriptAttempt.set(token.channel, token.attempt);
+      return { effects, transcript };
     }
   };
 }
