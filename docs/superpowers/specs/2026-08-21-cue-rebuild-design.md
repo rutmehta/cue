@@ -20,12 +20,14 @@ The rebuild keeps Cue's Electron application and its tested capture, prompt, mee
 6. Separate collapse, hide, pause, end-session, close-window, and quit semantics.
 7. Preserve existing meeting, screen-context, LeetCode, resume, notes, and cloud-provider functionality unless this specification explicitly changes its presentation.
 8. Add automated coverage for the state transitions and failure modes that currently rely on visual inspection.
+9. Apply the strongest supported screen-capture exclusion to the working overlay, expose an honest protection self-test, and produce a runnable macOS `.app` plus distributable archive.
 
 ## Non-goals
 
 - Rewriting the application in React, TypeScript, or Swift.
 - Adding text-to-speech or voice synthesis. OpenWhispr is reused only for speech-to-text assets.
-- Reproducing vendor claims about being undetectable. Cue will continue to use operating-system capture exclusion where supported, describe it as best effort, and retain an honest application/process identity.
+- Hiding Cue from Activity Monitor, operating-system privacy controls, endpoint security, or process inspection.
+- Claiming universal capture invisibility. Electron documents that modern macOS applications using ScreenCaptureKit can capture a protected Electron window because macOS no longer honors `NSWindowSharingNone` for that path. Cue will describe protection by tested capture path and retain an honest application/process identity.
 - Adding autonomous transcript-triggered LLM suggestions in this rebuild. Live transcript, manual Ask, Say, Assist, and existing actions remain the interaction model.
 - Uploading local audio to a cloud provider after a local-engine failure. A local route stays local and reports the failure.
 
@@ -170,7 +172,9 @@ An engine crash causes a visible local-to-local fallback. Cue retries the uncomm
 
 ### Working overlay
 
-The overlay remains transparent, capture-protected where supported, always on top, and bounded rather than display-sized. Default content width is 720 px; it has a 420 px minimum width and persists size and position per display. Restore logic intersects saved bounds with current displays and recenters safely when a display disappears.
+The overlay remains transparent, capture-protected where supported, always on top, and bounded rather than display-sized. `setContentProtection(true)` is applied before the overlay is first shown and reapplied after recreation; `isContentProtected()` is checked and reported. On Windows 10 version 2004 and later this requests `WDA_EXCLUDEFROMCAPTURE`; on macOS it requests `NSWindowSharingNone`. Linux is reported as unsupported. Default content width is 720 px; it has a 420 px minimum width and persists size and position per display. Restore logic intersects saved bounds with current displays and recenters safely when a display disappears.
+
+Diagnostics distinguishes `Protection requested`, `Legacy capture probe passed`, `Legacy capture probe failed`, and `Unsupported capture path`. The self-test uses Electron's available desktop/window capture enumeration and a screenshot probe where the platform permits it. It never converts `isContentProtected() === true` into an absolute invisibility claim. Modern macOS ScreenCaptureKit remains an explicitly disclosed unsupported exclusion path because only the capturing application controls ScreenCaptureKit's window/application exclusion filter.
 
 The overlay is interactive by default. A visible lock control enables click-through intentionally. Click-through never toggles from pointer hover. A global shortcut and tray/menu action always return the overlay to interactive mode, so it cannot become unreachable.
 
@@ -265,7 +269,7 @@ Required automated coverage:
 - Accessible labels/state copy and rendering of listening, paused, degraded, streaming, and error states.
 - Build configuration requiring local runtime artifacts for release packages.
 
-The existing `npm test` suite must remain green. A deterministic Electron smoke test must verify preload API exposure, overlay/control-center creation, quit wiring, and tray command routing without requiring microphone hardware. Packaging verification checks both macOS architectures supported by the current build configuration; Windows/Linux behavior remains covered by pure lifecycle, path, and build tests where those artifacts cannot be executed locally.
+The existing `npm test` suite must remain green. A deterministic Electron smoke test must verify preload API exposure, overlay/control-center creation, content-protection application, quit wiring, and tray command routing without requiring microphone hardware. Packaging verification checks both macOS architectures supported by the current build configuration; Windows/Linux behavior remains covered by pure lifecycle, path, and build tests where those artifacts cannot be executed locally.
 
 ## Delivery decomposition
 
@@ -274,7 +278,7 @@ Implementation is split into four plans. Each plan ends in independently runnabl
 1. **Session and lifecycle foundation:** authoritative state, source snapshots, window placement, hide/end/quit semantics, tray recovery, and lifecycle tests.
 2. **Local STT engines:** Parakeet adapter/discovery, whisper adapter repair, Auto benchmarking/fallback, capture correctness, and engine diagnostics.
 3. **Overlay and control center:** accessible visual rebuild, live source/transcript state, model selection and attribution, explicit settings persistence, and keyboard interaction.
-4. **Integration and release hardening:** runtime preparation/packaging, migrations, Electron smoke coverage, documentation, license notices, and final cross-feature verification.
+4. **Integration and release hardening:** runtime preparation/packaging, migrations, capture-protection self-test and disclosure, Electron smoke coverage, documentation, license notices, and final cross-feature verification.
 
 No milestone may silently weaken a requirement from an earlier milestone. Temporary compatibility code must be removed or explicitly documented before the fourth milestone completes.
 
@@ -290,5 +294,7 @@ The rebuild is complete when all of the following are true:
 6. The user can drag from the full rail, resize while interactive, intentionally lock click-through, and recover without the pointer.
 7. The control center saves model/provider settings atomically, and a failed save cannot appear successful.
 8. The visible Quit command exits after bounded cleanup, and the app has no duplicate lifecycle handlers.
-9. `npm test`, the deterministic Electron smoke test, runtime verification, and release packaging checks pass from a clean checkout with documented prerequisites.
-10. README behavior, platform support, privacy/capture-exclusion language, local runtime requirements, and shortcuts match the shipped implementation.
+9. Protection is applied before the overlay is shown, visible in Diagnostics, and verified against the capture paths the host platform permits Cue to probe; modern macOS ScreenCaptureKit limitations are stated without an absolute invisibility claim.
+10. `npm test`, the deterministic Electron smoke test, runtime verification, and release packaging checks pass from a clean checkout with documented prerequisites.
+11. `npm run pack:mac` produces a launchable arm64 `Cue.app`, and `npm run dist:mac` produces a distributable archive. The app contains its icon, honest bundle identity, microphone/system-audio usage descriptions, renderer assets, and configured local runtime artifacts. Unsigned local builds use ad-hoc signing where supported; notarization remains a release-credential step.
+12. README behavior, platform support, privacy/capture-exclusion language, local runtime requirements, build commands, artifact locations, and shortcuts match the shipped implementation.
