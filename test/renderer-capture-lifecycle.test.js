@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const {
@@ -307,4 +308,57 @@ test('observer rejection handling never reads a result-controlled catch accessor
 
   assert.equal(graph._legacy, true);
   assert.equal(catchAccesses, 0);
+});
+
+test('strict unhandled-rejection mode consumes a hostile native observer promise before assimilation', () => {
+  const modulePath = require.resolve('../renderer/capture-lifecycle');
+  const script = `
+    const { createAudioCaptureGraph } = require(${JSON.stringify(modulePath)});
+    let thenAccesses = 0;
+    let catchAccesses = 0;
+    const rejectedObserver = Promise.reject(new Error('diagnostic rejection'));
+    Object.defineProperties(rejectedObserver, {
+      then: {
+        configurable: true,
+        get() {
+          thenAccesses += 1;
+          throw new Error('hostile then accessor');
+        }
+      },
+      catch: {
+        configurable: true,
+        get() {
+          catchAccesses += 1;
+          throw new Error('hostile catch accessor');
+        }
+      }
+    });
+    const context = {
+      audioWorklet: { addModule: async () => { throw new Error('worklet unavailable'); } },
+      destination: {},
+      createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+      createScriptProcessor: () => ({ connect() {}, disconnect() {} }),
+      createGain: () => ({ gain: {}, connect() {}, disconnect() {} }),
+      async close() {}
+    };
+    (async () => {
+      const graph = await createAudioCaptureGraph({
+        audioContext: context,
+        mediaStream: {},
+        WorkletNode: function WorkletNode() {},
+        onPcm() {},
+        onWorkletFallback: () => rejectedObserver
+      });
+      await new Promise(setImmediate);
+      process.stdout.write(JSON.stringify({ legacy: graph._legacy, thenAccesses, catchAccesses }));
+    })().catch((error) => {
+      process.stderr.write(error.stack || String(error));
+      process.exitCode = 1;
+    });
+  `;
+
+  const result = spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', script], { encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '{"legacy":true,"thenAccesses":0,"catchAccesses":0}');
 });

@@ -130,8 +130,12 @@
     } catch (workletError) {
       try {
         const observerResult = onWorkletFallback(workletError);
-        const observerPromise = new Promise((resolve) => resolve(observerResult));
-        Promise.prototype.then.call(observerPromise, undefined, () => {});
+        try {
+          Promise.prototype.then.call(observerResult, undefined, () => {});
+        } catch (_) {
+          const observerPromise = new Promise((resolve) => resolve(observerResult));
+          Promise.prototype.then.call(observerPromise, undefined, () => {});
+        }
       } catch (_) { /* diagnostics cannot own capture cleanup */ }
       try {
         return connectScriptProcessor({ audioContext, mediaStream, onPcm });

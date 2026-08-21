@@ -357,3 +357,46 @@ Results:
 Every reviewer boundary was rechecked against the final commit path: global status ordering cannot suppress an opposite-channel transcript, invalid epochs and same-channel stale work remain closed, restart progress no longer depends on abandoned inference settlement, stale queue finalizers cannot publish into the new generation, diagnostic assimilation avoids result-owned continuation methods, and attempt identity does not reuse JavaScript numbers.
 
 The concurrency regressions are deterministic and use deferred in-memory providers; the audio probe uses fake graph nodes. Real provider cancellation, native Whisper process behavior, and Electron AudioContext fallback remain target-runtime smoke-test concerns, but correctness no longer relies on cancellation or observer cooperation.
+
+## Review Round 6
+
+The scoped re-review of Round 5 found one remaining native-promise boundary: wrapping an observer result immediately triggers promise assimilation, which reads an own hostile `then` accessor before any rejection reaction is attached to the original rejected promise. Legacy graph recovery can therefore succeed while Node's strict unhandled-rejection policy terminates the process.
+
+### Round 6 RED evidence
+
+The regression runs the real capture graph in a subprocess with `--unhandled-rejections=strict`. Its fallback observer returns an otherwise-unconsumed rejected native promise whose own `then` and `catch` getters both throw. Before the production change:
+
+```sh
+node --test test/renderer-capture-lifecycle.test.js
+```
+
+exited 1 with **12 passed and 1 failed**. The subprocess exited 1 on the original `diagnostic rejection` even though the ScriptProcessor graph had recovered, proving the wrapper consumed only its own assimilation failure and left the native promise unhandled.
+
+### Round 6 GREEN implementation
+
+Fallback diagnostics now first invoke `Promise.prototype.then.call(observerResult, undefined, rejectionHandler)`. A genuine native promise receives its rejection reaction through the intrinsic method without reading result-controlled `then` or `catch` properties. Only when that intrinsic call rejects the receiver as non-native does the code assimilate the result into a guaranteed fresh native promise and attach the same intrinsic rejection handler there. Synchronous observer errors, generic thenables, plain values, and terminal graph cleanup retain their existing best-effort behavior.
+
+### Round 6 verification
+
+Final verification commands:
+
+```sh
+node --test test/renderer-capture-lifecycle.test.js
+npm test
+node --check renderer/capture-lifecycle.js
+node --check test/renderer-capture-lifecycle.test.js
+git diff --check -- . ':(exclude)package-lock.json'
+```
+
+Results:
+
+- Focused capture lifecycle tests: **13 passed, 0 failed**. The strict subprocess exits 0 after reporting legacy recovery and zero reads of both hostile accessors.
+- Full suite: **217 passed, 0 failed, 0 cancelled/skipped/todo**; ordinary `npm test` exited normally in 151 ms.
+- Both Node syntax checks and the tracked whitespace check exited 0.
+- The user-modified `package-lock.json` and untracked `index.cjs`, `index.js`, and `main-CLCIkAdW.js` remain outside the commit.
+
+### Round 6 self-review and concerns
+
+The intrinsic branch is first, non-awaiting, and applies only a rejection reaction; it therefore consumes genuine native promise rejection before any result-owned continuation property can run. The fallback branch preserves thenable assimilation on a fresh promise and attaches its handler intrinsically. The regression's separate strict subprocess is intentionally unpreconsumed, so reverting the ordering deterministically terminates it.
+
+The remaining release concern is target-Electron AudioContext smoke testing; promise rejection ownership is covered under Node's strictest process-level policy.
