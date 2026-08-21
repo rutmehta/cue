@@ -28,6 +28,8 @@ test('main constructs one authoritative controller, lifecycle coordinator, and t
   assert.match(mainSource, /IPC_INVOKES\.sessionGetSnapshot/);
   assert.match(mainSource, /IPC_INVOKES\.sessionCommand/);
   assert.match(mainSource, /IPC_INVOKES\.windowCommand/);
+  assert.doesNotMatch(mainSource, /trayEnabled: true/);
+  assert.match(mainSource, /getTraySnapshot/);
 });
 
 test('every Cue window applies content protection before loading renderer content', () => {
@@ -55,11 +57,19 @@ test('main restores and persists immutable per-display overlay bounds', () => {
 });
 
 test('preload exposes stable named session APIs and removable snapshot subscriptions', () => {
-  for (const name of ['sessionGetSnapshot', 'sessionCommand', 'windowCommand', 'settingsOpen', 'captureProtection']) {
+  for (const name of ['sessionGetSnapshot', 'sessionCommand', 'windowCommand', 'settingsOpen', 'captureProtection', 'sourceUpdate']) {
     assert.match(preloadSource, new RegExp(`${name}:`));
   }
   assert.match(preloadSource, /IPC_EVENTS\.sessionSnapshot/);
   assert.match(preloadSource, /return \(\) => ipcRenderer\.removeListener\(channel, listener\)/);
+});
+
+test('renderer source lifecycle and main STT/settings/clear paths update the controller', () => {
+  assert.match(mainSource, /IPC_SENDS\.sourceUpdate/);
+  assert.match(mainSource, /type: 'STT_UPDATED'/);
+  assert.match(mainSource, /type: 'SETTINGS_UPDATED'/);
+  assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
+  assert.match(rendererSource, /cue\.sourceUpdate\(/);
 });
 
 test('renderer consumes one authoritative snapshot stream and explicit window commands', () => {

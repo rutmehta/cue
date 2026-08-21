@@ -42,18 +42,16 @@ function applyContentProtection(win, options = {}) {
 
   try {
     win.setContentProtection(true);
-    if (win.isContentProtected() !== true) {
-      return {
-        configured: false,
-        mode: 'error',
-        reason: 'Content protection could not be verified.'
-      };
-    }
   } catch (error) {
     return errorResult(error);
   }
 
-  return { configured: true, mode };
+  return {
+    configured: true,
+    mode,
+    verified: false,
+    reason: 'Content protection was requested; capture exclusion has not been verified.'
+  };
 }
 
 module.exports = {

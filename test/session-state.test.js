@@ -84,6 +84,47 @@ test('records request failures and rejects invalid source updates', () => {
   );
 });
 
+test('settings changes update requested routes/models and transcript clear resets both sources', () => {
+  let state = createInitialSnapshot({
+    now: 0,
+    settings: { provider: 'openai', models: { openai: { fast: 'gpt-fast' } } }
+  });
+  state = reduceSession(state, { type: 'TRANSCRIPT_INTERIM', source: 'system', text: 'partial' });
+  state = reduceSession(state, { type: 'TRANSCRIPT_FINAL', source: 'mic', text: 'final' });
+  state = reduceSession(state, {
+    type: 'SETTINGS_UPDATED',
+    settings: {
+      provider: 'anthropic',
+      smart: true,
+      models: { anthropic: { smart: 'claude-deep' } },
+      sttProvider: 'local',
+      localStt: { engine: 'whisper' }
+    }
+  });
+
+  assert.equal(state.stt.route, 'local');
+  assert.equal(state.stt.requestedEngine, 'whisper');
+  assert.equal(state.llm.provider, 'anthropic');
+  assert.equal(state.llm.requestedModel, 'claude-deep');
+
+  const cleared = reduceSession(state, { type: 'TRANSCRIPT_CLEARED' });
+  assert.deepEqual(cleared.transcript, {
+    mic: { interim: '', final: '' },
+    system: { interim: '', final: '' }
+  });
+  assert.equal(cleared.revision, state.revision + 1);
+});
+
+test('local provider requests Whisper even with the existing localWhisper settings schema', () => {
+  const state = createInitialSnapshot({
+    now: 0,
+    settings: { sttProvider: 'local', localWhisper: { modelId: 'base.en' } }
+  });
+
+  assert.equal(state.stt.route, 'local');
+  assert.equal(state.stt.requestedEngine, 'whisper');
+});
+
 test('derives error only when neither requested source can run', () => {
   let state = createInitialSnapshot({ now: 0 });
   state = reduceSession(state, { type: 'SESSION_START_REQUESTED', now: 1 });

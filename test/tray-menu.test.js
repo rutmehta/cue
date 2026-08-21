@@ -61,7 +61,7 @@ test('tray controller routes all menu callbacks and double-click through command
   assert.equal(destroyed, 1);
 });
 
-test('tray controller replaces its menu only when the subscribed session phase changes', () => {
+test('tray controller replaces its menu when session phase or window visibility changes', () => {
   const menus = [];
   let listener;
   const controller = createTrayController({
@@ -74,7 +74,7 @@ test('tray controller replaces its menu only when the subscribed session phase c
     icon: 'cue-icon',
     command: () => {},
     sessionController: {
-      getSnapshot: () => ({ session: { phase: 'idle' } }),
+      getSnapshot: () => ({ session: { phase: 'idle' }, overlay: { visible: false } }),
       subscribe: (next) => {
         listener = next;
         return () => { listener = null; };
@@ -82,9 +82,11 @@ test('tray controller replaces its menu only when the subscribed session phase c
     }
   });
 
-  listener({ session: { phase: 'idle' } });
-  listener({ session: { phase: 'listening' } });
-  assert.equal(menus.length, 2);
+  listener({ session: { phase: 'idle' }, overlay: { visible: false } });
+  listener({ session: { phase: 'idle' }, overlay: { visible: true } });
+  listener({ session: { phase: 'listening' }, overlay: { visible: true } });
+  assert.equal(menus.length, 3);
+  assert.equal(menus[1][0].label, 'Hide Cue');
   controller.destroy();
   assert.equal(listener, null);
 });

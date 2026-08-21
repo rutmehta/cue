@@ -195,4 +195,30 @@ const MODES = {
   }
 };
 
-module.exports = { MODES, formatTranscript };
+const TRANSCRIPT_LIMITS = Object.freeze({
+  assist: 14,
+  say: 16,
+  followup: 20,
+  recap: 0,
+  ask: 12,
+  answerThis: null,
+  leetcode: null
+});
+
+function buildFeaturePrompt(mode, ctx, { screenIncluded = false } = {}) {
+  const definition = MODES[mode];
+  if (!definition) throw new TypeError(`Unknown prompt mode: ${String(mode)}`);
+  const allTurns = Array.isArray(ctx.transcript) ? ctx.transcript : [];
+  const limit = TRANSCRIPT_LIMITS[mode];
+  const includedTurns = limit === null ? [] : limit === 0 ? allTurns : allTurns.slice(-limit);
+  return {
+    text: definition.build({ ...ctx, transcript: includedTurns }),
+    contextUsed: {
+      screen: Boolean(definition.needsScreen && screenIncluded),
+      mic: includedTurns.some((turn) => turn.channel === 'you'),
+      system: includedTurns.some((turn) => turn.channel === 'them')
+    }
+  };
+}
+
+module.exports = { MODES, buildFeaturePrompt, formatTranscript };

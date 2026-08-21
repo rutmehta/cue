@@ -22,12 +22,17 @@ function createInitialSnapshot({ now = Date.now(), settings = {} } = {}) {
       mic: { phase: 'off', level: 0, error: null },
       system: { phase: 'off', level: 0, error: null }
     },
-    stt: { route: settings.sttProvider === 'local' ? 'local' : 'cloud', requestedEngine: settings.localStt?.engine || 'auto', activeEngine: null, model: null, phase: 'off', detail: null },
+    stt: { route: settings.sttProvider === 'local' ? 'local' : 'cloud', requestedEngine: requestedSttEngine(settings), activeEngine: null, model: null, phase: 'off', detail: null },
     llm: { provider, requestedModel: settings.models?.[provider]?.[tier] || null, activeModel: null, phase: 'idle', error: null },
     transcript: { mic: { interim: '', final: '' }, system: { interim: '', final: '' } },
     request: { id: null, phase: 'idle', contextUsed: { screen: false, mic: false, system: false }, error: null },
     createdAt: now
   };
+}
+
+function requestedSttEngine(settings) {
+  if (settings.localStt?.engine) return settings.localStt.engine;
+  return settings.sttProvider === 'local' ? 'whisper' : 'auto';
 }
 
 function deriveSessionPhase(snapshot) {
@@ -69,6 +74,15 @@ function reduceSession(snapshot, event) {
       return reduceTranscript(snapshot, event, 'interim');
     case 'TRANSCRIPT_FINAL':
       return reduceTranscript(snapshot, event, 'final');
+    case 'TRANSCRIPT_CLEARED':
+      return revise(snapshot, {
+        transcript: {
+          mic: { interim: '', final: '' },
+          system: { interim: '', final: '' }
+        }
+      });
+    case 'SETTINGS_UPDATED':
+      return reduceSettingsUpdated(snapshot, event.settings);
     case 'LLM_REQUEST_STARTED':
       return revise(snapshot, {
         llm: {
@@ -103,6 +117,24 @@ function reduceSession(snapshot, event) {
     default:
       throw new TypeError(`Unknown session event: ${event.type}`);
   }
+}
+
+function reduceSettingsUpdated(snapshot, settings = {}) {
+  const provider = settings.provider || 'openai';
+  const tier = settings.smart ? 'smart' : 'fast';
+  const requestActive = snapshot.request.phase === 'capturing-context' || snapshot.request.phase === 'streaming';
+  return revise(snapshot, {
+    stt: {
+      ...snapshot.stt,
+      route: settings.sttProvider === 'local' ? 'local' : 'cloud',
+      requestedEngine: requestedSttEngine(settings)
+    },
+    llm: {
+      ...snapshot.llm,
+      provider: requestActive ? snapshot.llm.provider : provider,
+      requestedModel: settings.models?.[provider]?.[tier] || null
+    }
+  });
 }
 
 function reduceLifecycle(snapshot, event) {

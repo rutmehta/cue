@@ -25,6 +25,22 @@ test('dist/pack scripts do not pass an inline --config that could bypass electro
   }
 });
 
+test('development and packaged Windows identity are Cue-owned', () => {
+  assert.equal(pkg.scripts.postinstall, undefined);
+  const builder = require('../electron-builder.cjs');
+  assert.equal(builder.productName, 'Cue');
+  assert.equal(builder.executableName, 'cue');
+  assert.equal(builder.win.icon, 'icon.svg');
+  assert.equal(builder.mac.icon, 'icon.svg');
+  assert.equal(builder.linux.icon, 'icon.svg');
+  const iconPath = path.join(__dirname, '..', 'build-resources', builder.win.icon);
+  assert.equal(fs.existsSync(iconPath), true);
+  assert.match(fs.readFileSync(iconPath, 'utf8'), /<title>Cue<\/title>/);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'scripts', 'rename-electron.js')), false);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'scripts', 'apply-icon.js')), false);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'scripts', 'build-icon.js')), false);
+});
+
 test('mac config never auto-publishes and only claims hardened runtime / notarization with a real cert', () => {
   const original = { ...process.env };
   try {

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createLifecycleCoordinator } = require('../src/lifecycle');
+const { SessionController } = require('../src/session-controller');
 
 test('hide keeps capture running, end stops it, and quit cleans up once', async () => {
   const calls = [];
@@ -118,4 +119,29 @@ test('quit invokes remaining teardown even when a post-stop cleanup never settle
   await new Promise(setImmediate);
 
   assert.deepEqual(calls, ['unregister', 'destroy', 'exit']);
+});
+
+test('quit during an in-flight start waits for the queued session stop before exit', async () => {
+  let releaseStart;
+  const calls = [];
+  const controller = new SessionController({
+    startCapture: () => new Promise((resolve) => {
+      calls.push('start');
+      releaseStart = resolve;
+    }),
+    stopCapture: async () => calls.push('stop')
+  });
+  const lifecycle = createLifecycleCoordinator({
+    stopSession: () => controller.stop(),
+    exit: () => calls.push('exit')
+  });
+
+  const starting = controller.start();
+  await Promise.resolve();
+  const quitting = lifecycle.command('quit');
+  releaseStart();
+  await Promise.all([starting, quitting]);
+
+  assert.deepEqual(calls, ['start', 'stop', 'exit']);
+  assert.equal(controller.getSnapshot().session.phase, 'idle');
 });

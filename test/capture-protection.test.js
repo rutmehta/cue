@@ -11,13 +11,16 @@ for (const [platform, build, mode] of [
   test(`applies protection on ${platform} ${build}`, () => {
     const calls = [];
     const result = applyContentProtection({
-      setContentProtection: (value) => calls.push(value),
-      isContentProtected: () => true
+      setContentProtection: (value) => calls.push(value)
     }, { platform, windowsBuild: build });
 
     assert.deepEqual(calls, [true]);
-    assert.equal(result.mode, mode);
-    assert.equal(result.configured, true);
+    assert.deepEqual(result, {
+      configured: true,
+      mode,
+      verified: false,
+      reason: 'Content protection was requested; capture exclusion has not been verified.'
+    });
   });
 }
 
@@ -46,24 +49,14 @@ test('CUE_NO_PROTECT disables protection without calling Electron', () => {
   assert.equal(result.mode, 'disabled');
 });
 
-test('returns structured errors when Electron throws or cannot verify protection', () => {
+test('returns a structured error only when Electron rejects the protection request', () => {
   const thrown = applyContentProtection({
-    setContentProtection: () => { throw new Error('window is gone'); },
-    isContentProtected: () => true
+    setContentProtection: () => { throw new Error('window is gone'); }
   }, { platform: 'darwin' });
-  const unverified = applyContentProtection({
-    setContentProtection() {},
-    isContentProtected: () => false
-  }, { platform: 'win32', windowsBuild: 22631 });
 
   assert.deepEqual(thrown, {
     configured: false,
     mode: 'error',
     reason: 'window is gone'
-  });
-  assert.deepEqual(unverified, {
-    configured: false,
-    mode: 'error',
-    reason: 'Content protection could not be verified.'
   });
 });

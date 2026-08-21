@@ -12,4 +12,8 @@ const IPC_EVENTS = Object.freeze({
   sessionSnapshot: 'session:snapshot'
 });
 
-module.exports = { IPC_EVENTS, IPC_INVOKES };
+const IPC_SENDS = Object.freeze({
+  sourceUpdate: 'session:source-update'
+});
+
+module.exports = { IPC_EVENTS, IPC_INVOKES, IPC_SENDS };

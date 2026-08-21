@@ -14,7 +14,8 @@ class SessionController {
     this._publish = publish;
     this._snapshot = createInitialSnapshot({ now: this._now(), settings });
     this._listeners = new Set();
-    this._transition = null;
+    this._queueTail = Promise.resolve();
+    this._lastCommand = null;
     this._disposed = false;
   }
 
@@ -38,7 +39,7 @@ class SessionController {
   }
 
   start() {
-    return this._runTransition(async () => {
+    return this._runTransition('start', async () => {
       if (this._snapshot.session.phase !== 'idle' && this._snapshot.session.phase !== 'error') {
         return this._snapshot;
       }
@@ -53,7 +54,7 @@ class SessionController {
   }
 
   pause() {
-    return this._runTransition(async () => {
+    return this._runTransition('pause', async () => {
       if (this._snapshot.session.phase !== 'starting' && this._snapshot.session.phase !== 'listening') {
         return this._snapshot;
       }
@@ -68,7 +69,7 @@ class SessionController {
   }
 
   resume() {
-    return this._runTransition(async () => {
+    return this._runTransition('resume', async () => {
       if (this._snapshot.session.phase !== 'paused') {
         return this._snapshot;
       }
@@ -83,7 +84,7 @@ class SessionController {
   }
 
   stop() {
-    return this._runTransition(async () => {
+    return this._runTransition('stop', async () => {
       if (this._snapshot.session.phase === 'idle') {
         return this._snapshot;
       }
@@ -103,19 +104,25 @@ class SessionController {
     this._listeners.clear();
   }
 
-  _runTransition(operation) {
+  _runTransition(command, operation) {
     this._assertActive();
-    if (this._transition) {
-      return this._transition;
+    if (this._lastCommand?.name === command) {
+      return this._lastCommand.promise;
     }
 
-    const transition = Promise.resolve().then(operation);
-    this._transition = transition;
-    return transition.finally(() => {
-      if (this._transition === transition) {
-        this._transition = null;
+    const execute = () => {
+      this._assertActive();
+      return operation();
+    };
+    const run = this._queueTail.then(execute, execute);
+    const commandPromise = run.finally(() => {
+      if (this._lastCommand?.promise === commandPromise) {
+        this._lastCommand = null;
       }
     });
+    this._queueTail = commandPromise;
+    this._lastCommand = { name: command, promise: commandPromise };
+    return commandPromise;
   }
 
   _publishSnapshot() {

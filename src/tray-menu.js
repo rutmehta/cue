@@ -9,6 +9,10 @@ function sessionPhase(snapshot) {
   return snapshot && snapshot.session && snapshot.session.phase;
 }
 
+function snapshotKey(snapshot) {
+  return `${sessionPhase(snapshot) || 'none'}:${Boolean(snapshot?.overlay?.visible)}`;
+}
+
 function buildTrayTemplate(snapshot = {}, actions = {}) {
   const phase = sessionPhase(snapshot);
   const overlayVisible = Boolean(snapshot.overlay && snapshot.overlay.visible);
@@ -48,7 +52,7 @@ function createTrayController(dependencies = {}) {
     || (sessionController && sessionController.getSnapshot && sessionController.getSnapshot.bind(sessionController))
     || (() => ({}));
   let destroyed = false;
-  let currentPhase = Symbol('no-session-phase');
+  let currentSnapshotKey = Symbol('no-snapshot');
   let unsubscribe = noOp;
 
   function dispatch(name) {
@@ -60,8 +64,9 @@ function createTrayController(dependencies = {}) {
   }
 
   function update(snapshot = getSnapshot()) {
-    if (destroyed || sessionPhase(snapshot) === currentPhase) return false;
-    currentPhase = sessionPhase(snapshot);
+    const nextKey = snapshotKey(snapshot);
+    if (destroyed || nextKey === currentSnapshotKey) return false;
+    currentSnapshotKey = nextKey;
     const template = buildTrayTemplate(snapshot, {
       show: () => dispatch('show'),
       hide: () => dispatch('hide'),

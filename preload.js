@@ -1,5 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const { IPC_EVENTS, IPC_INVOKES } = require('./src/ipc-contract');
+const { IPC_EVENTS, IPC_INVOKES, IPC_SENDS } = require('./src/ipc-contract');
 const platform = process.platform;
 
 contextBridge.exposeInMainWorld('cue', {
@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('cue', {
   windowCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.windowCommand, command),
   settingsOpen: () => ipcRenderer.invoke(IPC_INVOKES.settingsOpen),
   captureProtection: () => ipcRenderer.invoke(IPC_INVOKES.captureProtection),
+  sourceUpdate: (source, patch) => ipcRenderer.send(IPC_SENDS.sourceUpdate, { source, patch }),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
   whisperModels: () => ipcRenderer.invoke('whisper:models'),

@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { describeState, consentCopy } = require('../src/applink-state');
+const { applyCaptureCommand, describeState, consentCopy } = require('../src/applink-state');
 const { AppLinkServer, AppLinkClient } = require('../vendor/app-link');
 
 const SETTINGS = {
@@ -23,6 +23,7 @@ const TRANSCRIPT = [
 function snapshot(overrides = {}) {
   return {
     state: { capturing: true, busy: false, transcribing: { you: false, them: true } },
+    session: { session: { phase: 'listening' } },
     transcript: TRANSCRIPT,
     settings: SETTINGS,
     sttDisabled: false,
@@ -41,6 +42,27 @@ test('reports what cue is doing', () => {
   assert.equal(state.provider, 'openai');
   assert.deepEqual(state.models, { fast: 'gpt-4o-mini', smart: 'gpt-4o' });
   assert.deepEqual(state.shortcuts, { assist: 'CommandOrControl+Return', leetcode: true, quit: true });
+});
+
+test('authoritative session phase overrides the legacy PCM adapter gate', () => {
+  assert.equal(describeState(snapshot({ state: { capturing: false, busy: false, transcribing: { you: false, them: false } } })).capturing, true);
+  assert.equal(describeState(snapshot({ session: { session: { phase: 'idle' } } })).capturing, false);
+});
+
+test('capture actions await the controller and report its resulting snapshot', async () => {
+  const calls = [];
+  const failedStart = await applyCaptureCommand(true, async (active) => {
+    calls.push(active);
+    return { session: { phase: 'error' } };
+  });
+  const stopped = await applyCaptureCommand(false, async (active) => {
+    calls.push(active);
+    return { session: { phase: 'idle' } };
+  });
+
+  assert.deepEqual(calls, [true, false]);
+  assert.deepEqual(failedStart, { capturing: false });
+  assert.deepEqual(stopped, { capturing: false });
 });
 
 /**

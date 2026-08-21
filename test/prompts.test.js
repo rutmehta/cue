@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MODES } = require('../src/prompts');
+const { MODES, buildFeaturePrompt } = require('../src/prompts');
 
 test('assist mode gives a direct answer in first person', () => {
   const system = MODES.assist.buildSystem(null);
@@ -63,4 +63,27 @@ test('leetcode mode never applies AI rules (coding answers stay strict)', () => 
   assert.ok(!withRules.includes('USER RULES'), 'leetcode must not include USER RULES');
   assert.ok(!withRules.includes(RULES), 'leetcode must not leak user rules into the prompt');
   assert.match(withRules, /competitive programmer/);
+});
+
+test('context attribution is derived from only transcript turns actually included', () => {
+  const turns = [
+    { channel: 'you', text: 'excluded microphone turn' },
+    ...Array.from({ length: 16 }, (_value, index) => ({ channel: 'them', text: `recent system turn ${index}` }))
+  ];
+  const result = buildFeaturePrompt('say', { transcript: turns, userText: '' }, { screenIncluded: true });
+
+  assert.equal(result.text.includes('excluded microphone turn'), false);
+  assert.deepEqual(result.contextUsed, { screen: false, mic: false, system: true });
+});
+
+test('leetcode attributes only a successfully included screenshot', () => {
+  const transcript = [{ channel: 'you', text: 'mic' }, { channel: 'them', text: 'system' }];
+  assert.deepEqual(
+    buildFeaturePrompt('leetcode', { transcript, userText: '' }, { screenIncluded: true }).contextUsed,
+    { screen: true, mic: false, system: false }
+  );
+  assert.deepEqual(
+    buildFeaturePrompt('leetcode', { transcript, userText: '' }, { screenIncluded: false }).contextUsed,
+    { screen: false, mic: false, system: false }
+  );
 });

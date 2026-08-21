@@ -14,11 +14,20 @@
 //     diagnostic fact about it.
 //   • Whether an API key is set is a diagnosis. The key is a liability.
 
-function describeState({ state, transcript, settings, sttDisabled, shortcuts, windowAlive }) {
+function isSessionCapturing(session) {
+  return ['starting', 'listening'].includes(session?.session?.phase);
+}
+
+async function applyCaptureCommand(active, setCapturing) {
+  const session = await setCapturing(active);
+  return { capturing: isSessionCapturing(session) };
+}
+
+function describeState({ state, session, transcript, settings, sttDisabled, shortcuts, windowAlive }) {
   const keys = (settings && settings.apiKeys) || {};
   const turns = transcript || [];
   return {
-    capturing: state.capturing,
+    capturing: isSessionCapturing(session),
     busy: state.busy,
     transcribing: { you: state.transcribing.you, them: state.transcribing.them },
 
@@ -71,4 +80,4 @@ function consentCopy(request) {
   };
 }
 
-module.exports = { describeState, consentCopy };
+module.exports = { applyCaptureCommand, describeState, consentCopy, isSessionCapturing };

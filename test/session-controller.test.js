@@ -81,3 +81,72 @@ test('stops sources and STT in the terminal published snapshot', async () => {
   assert.equal(snapshot.stt.phase, 'off');
   assert.equal(published.at(-1).sources.mic.phase, 'off');
 });
+
+test('queues stop behind an in-flight start while coalescing duplicate stop commands', async () => {
+  let releaseStart;
+  const calls = [];
+  const controller = new SessionController({
+    startCapture: () => new Promise((resolve) => {
+      calls.push('start');
+      releaseStart = resolve;
+    }),
+    stopCapture: async () => calls.push('stop')
+  });
+
+  const starting = controller.start();
+  await Promise.resolve();
+  const stopping = controller.stop();
+  const duplicateStop = controller.stop();
+  releaseStart();
+  await Promise.all([starting, stopping, duplicateStop]);
+
+  assert.deepEqual(calls, ['start', 'stop']);
+  assert.equal(controller.getSnapshot().session.phase, 'idle');
+});
+
+test('queues pause behind an in-flight start and re-evaluates the resulting phase', async () => {
+  let releaseStart;
+  const calls = [];
+  const controller = new SessionController({
+    startCapture: () => new Promise((resolve) => {
+      calls.push('start');
+      releaseStart = resolve;
+    }),
+    stopCapture: async () => calls.push('stop')
+  });
+
+  const starting = controller.start();
+  await Promise.resolve();
+  const pausing = controller.pause();
+  releaseStart();
+  await Promise.all([starting, pausing]);
+
+  assert.deepEqual(calls, ['start', 'stop']);
+  assert.equal(controller.getSnapshot().session.phase, 'paused');
+});
+
+test('queues stop behind an in-flight resume', async () => {
+  let startCount = 0;
+  let releaseResume;
+  const calls = [];
+  const controller = new SessionController({
+    startCapture: () => {
+      calls.push('start');
+      startCount += 1;
+      return startCount === 1 ? Promise.resolve() : new Promise((resolve) => { releaseResume = resolve; });
+    },
+    stopCapture: async () => calls.push('stop')
+  });
+
+  await controller.start();
+  controller.dispatch({ type: 'SOURCE_UPDATED', source: 'mic', patch: { phase: 'live' } });
+  await controller.pause();
+  const resuming = controller.resume();
+  await Promise.resolve();
+  const stopping = controller.stop();
+  releaseResume();
+  await Promise.all([resuming, stopping]);
+
+  assert.deepEqual(calls, ['start', 'stop', 'start', 'stop']);
+  assert.equal(controller.getSnapshot().session.phase, 'idle');
+});

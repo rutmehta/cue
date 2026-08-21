@@ -6,14 +6,14 @@ const { captureScreenshot } = require('./src/screen');
 const { createSTT } = require('./src/stt');
 const { parseDocumentFile } = require('./src/resume');
 const { createLLM } = require('./src/llm');
-const { MODES } = require('./src/prompts');
+const { MODES, buildFeaturePrompt } = require('./src/prompts');
 const { rms16 } = require('./src/wav');
 const { createStreamingSTT } = require('./src/stt-streaming');
 const { AdaptiveVAD, AudioRingBuffer } = require('./src/vad');
 const { buildInterviewContext, detectCategory } = require('./src/interview-context');
 const { startAppLink, stopAppLink, recordEvent, appLinkConsentState, revokeAppLinkCaller } = require('./src/applink');
 const { applyContentProtection } = require('./src/capture-protection');
-const { IPC_EVENTS, IPC_INVOKES } = require('./src/ipc-contract');
+const { IPC_EVENTS, IPC_INVOKES, IPC_SENDS } = require('./src/ipc-contract');
 const { createLifecycleCoordinator } = require('./src/lifecycle');
 const { SessionController } = require('./src/session-controller');
 const { createTrayController } = require('./src/tray-menu');
@@ -112,6 +112,18 @@ function publishSessionSnapshot(snapshot = sessionController?.getSnapshot()) {
   send(IPC_EVENTS.sessionSnapshot, snapshot);
 }
 
+function getTraySnapshot() {
+  const snapshot = sessionController?.getSnapshot() || {};
+  return {
+    ...snapshot,
+    overlay: { visible: Boolean(win && !win.isDestroyed() && win.isVisible()) }
+  };
+}
+
+function refreshTray() {
+  trayController?.update(getTraySnapshot());
+}
+
 function protectWindow(browserWindow) {
   const status = applyContentProtection(browserWindow, {
     platform: process.platform,
@@ -125,6 +137,19 @@ function protectWindow(browserWindow) {
 function dispatchSession(event) {
   if (!sessionController) return null;
   return sessionController.dispatch(event);
+}
+
+function publishSttStatus(status, details = {}) {
+  const phases = {
+    connecting: 'probing', loading: 'loading', ready: 'ready', connected: 'ready',
+    transcribing: 'transcribing', fallback: 'fallback', error: 'error',
+    disconnected: 'off', off: 'off', stopping: 'off'
+  };
+  const phase = phases[status] || status;
+  dispatchSession({
+    type: 'STT_UPDATED',
+    patch: { phase, detail: details.detail || null, ...details.patch }
+  });
 }
 
 function sourceForChannel(channel) {
@@ -168,6 +193,10 @@ async function startLocalWhisper(settings) {
   const runtime = getWhisperRuntime();
   if (!runtime.available) throw new Error(runtime.message);
   activeWhisperModelId = model.id;
+  publishSttStatus('loading', {
+    detail: `Loading local Whisper model ${model.id}.`,
+    patch: { activeEngine: 'whisper', model: model.id }
+  });
   let transcriber = null;
   try {
     const modelPath = await whisperModelManager.verifyInstalledModel(model.id).catch((error) => {
@@ -190,11 +219,21 @@ async function startLocalWhisper(settings) {
       onSpeechState: (channel, speaking, durationMs) => {
         send('vad:state', { channel, speaking, durationMs });
       },
-      onStatus: (status) => send('stt:status', { provider: 'local', ...status }),
+      onStatus: (status) => {
+        send('stt:status', { provider: 'local', ...status });
+        publishSttStatus(status.status, {
+          detail: status.message,
+          patch: { activeEngine: 'whisper', model: activeWhisperModelId }
+        });
+      },
       onError: (error) => {
         sttDisabled = true;
         console.log('[local-whisper] error', error && error.message);
         send('stt:status', { provider: 'local', status: 'error' });
+        publishSttStatus('error', {
+          detail: error.message,
+          patch: { activeEngine: 'whisper', model: activeWhisperModelId }
+        });
         send('status', { message: `Local transcription error: ${error.message}. Audio was not sent to a cloud fallback.` });
       }
     });
@@ -301,7 +340,12 @@ function createWindow() {
   createdWindow.on('close', (event) => {
     if (quitCleanupStarted) return;
     event.preventDefault();
-    createdWindow.hide();
+    if (lifecycleCoordinator?.closeDecision() === 'quit') {
+      void requestQuit();
+    } else {
+      createdWindow.hide();
+      refreshTray();
+    }
   });
   createdWindow.on('closed', () => {
     clearTimeout(boundsSaveTimer);
@@ -312,6 +356,7 @@ function createWindow() {
     if (createdWindow.isDestroyed()) return;
     createdWindow.showInactive();
     publishSessionSnapshot();
+    refreshTray();
     if (!protectionStatus.configured && protectionStatus.reason) {
       send('status', { message: protectionStatus.reason });
     }
@@ -393,6 +438,7 @@ function initStreamingSTT() {
   streamingMode = false;
 
   ['you', 'them'].forEach((channel) => {
+    let activeProvider = settings.sttProvider || 'auto';
     const sttInstance = createStreamingSTT(settings, channel, {
       onTranscript: (ch, text) => {
         const turn = { channel: ch, text, ts: Date.now() };
@@ -407,12 +453,17 @@ function initStreamingSTT() {
       },
       onError: (err) => {
         console.log('[streaming-stt] error', err.provider, err.message);
-        const batchFallbackAvailable = createSTT(settings).available;
+        const batch = createSTT(settings);
         stopStreamingSTT(); // close WebSockets and clear keep-alive intervals
-        if (batchFallbackAvailable) {
+        if (batch.available) {
+          publishSttStatus('fallback', {
+            detail: err.message,
+            patch: { activeEngine: batch.providers[0] || null, model: settings.sttModel || null }
+          });
           send('status', { message: `Streaming transcription (${err.provider}) error: ${err.message}. Falling back to batch mode.` });
           startFlushLoop();
         } else if (!sttDisabled) {
+          publishSttStatus('error', { detail: err.message });
           sttDisabled = true;
           send('status', { message: `Transcription stopped (${err.provider}): ${err.message}. The selected provider has no batch fallback.` });
         }
@@ -420,11 +471,19 @@ function initStreamingSTT() {
       },
       onStatusChange: (ch, status) => {
         send('stt:status', { channel: ch, status });
+        if (status === 'disconnected' && (!state.capturing || !streamingMode)) return;
+        publishSttStatus(status, {
+          patch: {
+            activeEngine: activeProvider,
+            model: activeProvider === 'deepgram' ? 'nova-3' : activeProvider === 'openai-realtime' ? 'gpt-realtime-whisper' : null
+          }
+        });
         if (status === 'connected') {
           console.log(`[streaming-stt] ${ch} channel connected`);
         }
       }
     });
+    activeProvider = sttInstance.provider;
 
     if (sttInstance.type === 'streaming' && sttInstance.instance) {
       streamingMode = true;
@@ -495,6 +554,10 @@ async function setCapturing(active) {
           return false;
         }
         send('stt:status', { provider: 'local', status: 'error' });
+        publishSttStatus('error', {
+          detail: error.message,
+          patch: { activeEngine: 'whisper', model: activeWhisperModelId }
+        });
         send('status', { message: `Local transcription could not start: ${error.message} No audio was sent to a cloud provider.` });
         send('capture:state', { active: false, streaming: false, mode: 'local' });
         return false;
@@ -502,10 +565,19 @@ async function setCapturing(active) {
     }
 
     state.capturing = true;
+    publishSttStatus('probing', {
+      detail: 'Selecting a speech-to-text route.',
+      patch: { activeEngine: null, model: null }
+    });
     // Try streaming first, fall back to batch
     const streaming = initStreamingSTT();
     if (!streaming) {
       startFlushLoop();
+      const batch = createSTT(settings);
+      publishSttStatus(batch.available ? 'ready' : 'error', {
+        detail: batch.available ? 'Batch transcription is ready.' : 'No configured speech-to-text provider is available.',
+        patch: { activeEngine: batch.providers[0] || null, model: settings.sttModel || null }
+      });
     }
     console.log('[cue] capture started, mode:', streaming ? 'streaming' : 'batch');
     send('capture:state', { active: true, streaming: streamingMode, mode: streaming ? 'streaming' : 'batch' });
@@ -513,6 +585,7 @@ async function setCapturing(active) {
   }
 
   state.capturing = false;
+  publishSttStatus('off', { patch: { activeEngine: null, model: null } });
   stopFlushLoop();
   stopStreamingSTT();
   buffers.you = []; buffers.them = [];
@@ -588,18 +661,17 @@ async function runFeature(mode, userText) {
     const settingsForPrompt = store.getSettings();
     const contextBlock = buildInterviewContext(settingsForPrompt, mode, transcript);
     const system = def.buildSystem ? def.buildSystem(contextBlock, settingsForPrompt.aiRules || '') : (def.system || '');
-    const built = def.build({ transcript, userText: userText || '' });
+    const prompt = buildFeaturePrompt(mode, { transcript, userText: userText || '' }, {
+      screenIncluded: Boolean(imageDataUrl)
+    });
+    const built = prompt.text;
     requestId = `request-${Date.now()}-${++llmRequestSequence}`;
     dispatchSession({
       type: 'LLM_REQUEST_STARTED',
       id: requestId,
       provider: llm.provider,
       model: llm.model,
-      contextUsed: {
-        screen: Boolean(imageDataUrl),
-        mic: transcript.some((turn) => turn.channel === 'you'),
-        system: transcript.some((turn) => turn.channel === 'them')
-      }
+      contextUsed: prompt.contextUsed
     });
     requestStarted = true;
 
@@ -681,7 +753,18 @@ ipcMain.handle(IPC_INVOKES.captureProtection, (event) => {
   };
 });
 ipcMain.handle('settings:get', () => store.getSettings());
-ipcMain.handle('settings:set', (_e, patch) => { sttDisabled = false; return store.setSettings(patch); });
+ipcMain.handle('settings:set', (_e, patch) => {
+  sttDisabled = false;
+  const settings = store.setSettings(patch);
+  dispatchSession({
+    type: 'SETTINGS_UPDATED',
+    settings: {
+      ...settings,
+      localStt: settings.localStt || { engine: settings.sttProvider === 'local' ? 'whisper' : 'auto' }
+    }
+  });
+  return settings;
+});
 ipcMain.handle('capture:toggle', async () => {
   if (!sessionController) throw new Error('Cue session is not ready.');
   const phase = sessionController.getSnapshot().session.phase;
@@ -690,7 +773,9 @@ ipcMain.handle('capture:toggle', async () => {
   else await sessionController.stop();
   return state.capturing;
 });
-ipcMain.handle('capture:state', () => ({ active: state.capturing }));
+ipcMain.handle('capture:state', () => ({
+  active: ['starting', 'listening'].includes(sessionController?.getSnapshot().session.phase)
+}));
 ipcMain.handle('whisper:models', () => getWhisperOverview());
 ipcMain.handle('whisper:model-download', async (_event, modelId) => {
   if (!whisperModelManager) throw new Error('The local Whisper model manager is not ready.');
@@ -734,7 +819,16 @@ ipcMain.handle('platform:info', () => ({
 }));
 ipcMain.handle('transcript:clear', () => {
   transcript.splice(0, transcript.length);
+  dispatchSession({ type: 'TRANSCRIPT_CLEARED' });
   return { ok: true };
+});
+ipcMain.on(IPC_SENDS.sourceUpdate, (_event, payload) => {
+  if (!payload || !sessionController) return;
+  try {
+    dispatchSession({ type: 'SOURCE_UPDATED', source: payload.source, patch: payload.patch });
+  } catch (error) {
+    console.log('[cue] rejected source lifecycle update', error.message);
+  }
 });
 ipcMain.on('ask', (_e, payload) => runFeature(payload.mode, payload.text));
 ipcMain.on('mic:pcm', (_e, arrayBuffer) => {
@@ -894,11 +988,13 @@ function showOverlay() {
     win.setIgnoreMouseEvents(false);
     win.showInactive();
     publishSessionSnapshot();
+    refreshTray();
   }
 }
 
 function hideOverlay() {
   if (win && !win.isDestroyed()) win.hide();
+  refreshTray();
 }
 
 function collapseOverlay() {
@@ -909,6 +1005,7 @@ function unlockInteraction() {
   if (!win || win.isDestroyed()) createWindow();
   win.setIgnoreMouseEvents(false);
   win.showInactive();
+  refreshTray();
 }
 
 function lockInteraction() {
@@ -925,6 +1022,7 @@ function recenterOverlay() {
   });
   win.setBounds(bounds);
   win.showInactive();
+  refreshTray();
 }
 
 function openSettings() {
@@ -979,11 +1077,14 @@ async function createAppTray() {
       Tray,
       Menu,
       icon,
-      sessionController,
-      command: (command) => lifecycleCoordinator.command(command)
+      getSnapshot: getTraySnapshot,
+      subscribe: (listener) => sessionController.subscribe(() => listener(getTraySnapshot())),
+      command: (command) => lifecycleCoordinator?.command(command)
     });
+    return true;
   } catch (error) {
     console.log('[cue] tray unavailable:', error && error.message);
+    return false;
   }
 }
 
@@ -1025,9 +1126,10 @@ async function launchApp() {
   });
 
   createWindow();
+  const trayEnabled = await createAppTray();
   lifecycleCoordinator = createLifecycleCoordinator({
     platform: process.platform,
-    trayEnabled: true,
+    trayEnabled,
     showOverlay,
     hideOverlay,
     collapseOverlay,
@@ -1044,7 +1146,7 @@ async function launchApp() {
     destroyWindowsAndTray,
     exit: () => app.exit(0)
   });
-  await createAppTray();
+  refreshTray();
 
   // Started before the shortcuts so their registration failures are recorded.
   startAppLink({

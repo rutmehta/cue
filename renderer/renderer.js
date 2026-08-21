@@ -569,7 +569,7 @@
     if (turningOn) {
       // startSystemAudio may fail (user cancels, no permission) — that's OK,
       // mic will still work and capture will toggle regardless
-      try { await startSystemAudio(); } catch (_) { /* handled inside startSystemAudio */ }
+      void startSystemAudio();
     }
     const command = phase === 'paused' ? 'resume' : turningOn ? 'start' : 'end-session';
     const snapshot = await cue.sessionCommand(command);
@@ -601,171 +601,131 @@
     });
   }
 
-  // ---- capture: mic (renderer side) — uses AudioWorklet (modern, off-main-thread) ----
-  let audioCtx = null, micStream = null, micWorklet = null;
-  async function startMic() {
-    if (micStream) return;
+  // ---- capture: mic + system audio (renderer side) ----------------------
+  const { connectAudioWorklet, createCaptureLifecycle, disconnectAudioGraph } = window.CaptureLifecycle;
+  const stopTracks = (stream) => stream && stream.getTracks().forEach((track) => track.stop());
+  function disconnectCapture(capture) {
+    if (!capture) return;
+    if (capture.graph._legacy) {
+      capture.graph.proc.onaudioprocess = null;
+      capture.graph.proc.disconnect(); capture.graph.node.disconnect(); capture.graph.sink.disconnect();
+    } else {
+      disconnectAudioGraph(capture.graph);
+    }
+    void capture.context.close();
+    stopTracks(capture.stream);
+  }
+  function legacyAudioGraph(context, stream, onPcm) {
+    const node = context.createMediaStreamSource(stream);
+    const proc = context.createScriptProcessor(4096, 1, 1);
+    const sink = context.createGain(); sink.gain.value = 0;
+    node.connect(proc); proc.connect(sink); sink.connect(context.destination);
+    proc.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const output = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        const sample = Math.max(-1, Math.min(1, input[i]));
+        output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      }
+      onPcm(output.buffer);
+    };
+    return { _legacy: true, node, proc, sink };
+  }
+  async function activateCapture(stream, onPcm, label) {
+    const context = new AudioContext({ sampleRate: 16000 });
+    let graph;
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          sampleRate: 16000
-        }
-      });
-      // getUserMedia can resolve with a stream that has no usable audio track
-      // (e.g. a virtual/placeholder device, or a device that was unplugged
-      // between permission grant and capture start). Fail loudly here instead
-      // of silently wiring up an AudioWorklet to nothing — that produces the
-      // "cue never hears me, no error shown" symptom with no diagnostic at all.
-      const [track] = micStream.getAudioTracks();
+      await context.audioWorklet.addModule('audio-worklet-processor.js');
+      graph = connectAudioWorklet({ audioContext: context, mediaStream: stream, WorkletNode: AudioWorkletNode, onPcm });
+      cue.log(label + ' AudioWorklet processor attached');
+    } catch (workletError) {
+      cue.log(label + ' AudioWorklet failed, using ScriptProcessor: ' + workletError.message);
+      graph = legacyAudioGraph(context, stream, onPcm);
+    }
+    return { stream, context, graph };
+  }
+  function sourceError(error) {
+    return { code: error.code || error.name || 'capture_failed', message: error.message || String(error) };
+  }
+  function showMicError(error) {
+    const name = error && error.name;
+    cue.log('mic error: ' + name + ' — ' + (error.message || String(error)));
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      showStatus('No microphone was found. Plug one in, or pick a default input device in your OS sound settings, then try again.');
+    } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+      showStatus(isWindows
+        ? 'Microphone permission was denied. Settings → Privacy & security → Microphone → allow cue, then try again.'
+        : 'Microphone permission was denied. System Settings → Privacy & Security → Microphone → allow cue, then try again.');
+    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+      showStatus('The microphone could not be started — another application may be using it exclusively. Close other apps using the mic and try again.');
+    } else {
+      showStatus('Microphone capture could not be started. Check your mic permissions and try again.');
+    }
+  }
+  const micCapture = createCaptureLifecycle({
+    acquire: async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+        channelCount: 1, sampleRate: 16000
+      } });
+      const [track] = stream.getAudioTracks();
       if (!track) {
-        micStream.getTracks().forEach((t) => t.stop());
-        micStream = null;
-        showStatus('No microphone audio track was available. Check Windows Sound settings for a working default input device, then try again.');
-        return;
+        const error = new Error('No microphone audio track was available.');
+        error.code = 'no_audio_track';
+        stopTracks(stream);
+        throw error;
       }
-      cue.log('mic stream started: track=' + (track.label || '(no label — permission may be stale)') + ' muted=' + track.muted);
-      audioCtx = new AudioContext({ sampleRate: 16000 });
+      cue.log('mic stream started: track=' + (track.label || '(no label)') + ' muted=' + track.muted);
+      return stream;
+    },
+    activate: (stream) => activateCapture(stream, (pcm) => cue.micPcm(pcm), 'mic'),
+    disposeAcquired: stopTracks,
+    disposeActive: disconnectCapture,
+    onPhase: (phase, error) => cue.sourceUpdate('mic', { phase, error: error ? sourceError(error) : null })
+  });
+  function startMic() { return micCapture.start().catch((error) => { showMicError(error); return null; }); }
+  function stopMic() { micCapture.stop(); }
 
-      // Use AudioWorklet for low-latency, off-main-thread processing
-      try {
-        await audioCtx.audioWorklet.addModule('audio-worklet-processor.js');
-        const source = audioCtx.createMediaStreamSource(micStream);
-        micWorklet = new AudioWorkletNode(audioCtx, 'cue-audio-processor');
-        micWorklet.port.onmessage = (e) => {
-          cue.micPcm(e.data);
-        };
-        source.connect(micWorklet);
-        // Don't connect to destination — we just capture, don't play
-        cue.log('mic AudioWorklet processor attached');
-      } catch (workletErr) {
-        // Fallback to ScriptProcessor if AudioWorklet fails (shouldn't happen in Electron 33+)
-        cue.log('AudioWorklet failed, falling back to ScriptProcessor: ' + workletErr.message);
-        const micNode = audioCtx.createMediaStreamSource(micStream);
-        const micProc = audioCtx.createScriptProcessor(4096, 1, 1);
-        const sink = audioCtx.createGain(); sink.gain.value = 0;
-        micNode.connect(micProc); micProc.connect(sink); sink.connect(audioCtx.destination);
-        micProc.onaudioprocess = (e) => {
-          const f = e.inputBuffer.getChannelData(0);
-          const out = new Int16Array(f.length);
-          for (let i = 0; i < f.length; i++) { const s = Math.max(-1, Math.min(1, f[i])); out[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
-          cue.micPcm(out.buffer);
-        };
-        micWorklet = { _legacy: true, proc: micProc, node: micNode, sink };
+  const systemCapture = createCaptureLifecycle({
+    acquire: async () => {
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+        const error = new Error('Meeting audio capture is not available on this device build.');
+        error.code = 'unsupported';
+        throw error;
       }
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      const name = err && err.name;
-      cue.log('mic error: ' + name + ' — ' + message);
-      // getUserMedia's DOMException.name is the reliable signal here — the
-      // .message text varies by Chromium version and isn't meant for users.
-      // Distinguishing "no device" from "denied" from "in use elsewhere"
-      // turns one generic dead end into three different next actions.
-      if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-        showStatus('No microphone was found. Plug one in, or pick a default input device in your OS sound settings, then try again.');
-      } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
-        showStatus(isWindows
-          ? 'Microphone permission was denied. Settings → Privacy & security → Microphone → allow cue, then try again.'
-          : 'Microphone permission was denied. System Settings → Privacy & Security → Microphone → allow cue, then try again.');
-      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
-        showStatus('The microphone could not be started — another application may be using it exclusively. Close other apps using the mic and try again.');
-      } else {
-        showStatus('Microphone capture could not be started. Check your mic permissions and try again.');
-      }
-    }
-  }
-  function stopMic() {
-    if (micWorklet) {
-      if (micWorklet._legacy) {
-        micWorklet.proc.disconnect(); micWorklet.proc.onaudioprocess = null;
-        micWorklet.node.disconnect(); micWorklet.sink.disconnect();
-      } else {
-        micWorklet.disconnect();
-      }
-      micWorklet = null;
-    }
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
-    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
-  }
-
-  // ---- capture: system/meeting audio (getDisplayMedia loopback, in cue's process) ----
-  let sysStream = null, sysCtx = null, sysWorklet = null, sysStarting = false;
-  async function startSystemAudio() {
-    // Called both from the stop-btn click (fresh user gesture for getDisplayMedia) and from the
-    // capture:state handler. getDisplayMedia is async, so `if (sysStream) return` alone loses the
-    // race and can open a second loopback stream that is then orphaned.
-    if (sysStream || sysStarting) return;
-    sysStarting = true;
-    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
-      cue.log('system audio unavailable: getDisplayMedia not supported');
-      showStatus('Meeting audio capture is not available on this device build.');
-      return;
-    }
-    try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-
-      stream.getVideoTracks().forEach((t) => t.stop()); // we only want the audio
+      stream.getVideoTracks().forEach((track) => track.stop());
       const tracks = stream.getAudioTracks();
       if (!tracks.length) {
-        cue.log('system audio: no loopback track on this platform');
-        stream.getTracks().forEach((t) => t.stop());
-        showStatus(cue.platform === 'win32'
-          ? 'No system-audio loopback track detected. Make sure "Share audio" is checked in the screen share dialog, and that your audio device is not in exclusive mode.'
-          : 'No system-audio loopback track detected. Meeting audio needs macOS 14.4+ — your screen and microphone still work.');
-        return;
+        stopTracks(stream);
+        const error = new Error('No system-audio loopback track was provided.');
+        error.code = 'unsupported';
+        throw error;
       }
-      sysStream = stream;
-      sysCtx = new AudioContext({ sampleRate: 16000 });
-
-      // Use AudioWorklet for system audio too
-      try {
-        await sysCtx.audioWorklet.addModule('audio-worklet-processor.js');
-        const source = sysCtx.createMediaStreamSource(new MediaStream(tracks));
-        sysWorklet = new AudioWorkletNode(sysCtx, 'cue-audio-processor');
-        sysWorklet.port.onmessage = (e) => {
-          cue.systemPcm(e.data);
-        };
-        source.connect(sysWorklet);
-        cue.log('system audio: AudioWorklet capturing loopback');
-      } catch (workletErr) {
-        // Fallback to ScriptProcessor
-        cue.log('system audio AudioWorklet failed, using ScriptProcessor: ' + workletErr.message);
-        const sysNode = sysCtx.createMediaStreamSource(new MediaStream(tracks));
-        const sysProc = sysCtx.createScriptProcessor(4096, 1, 1);
-        const sink = sysCtx.createGain(); sink.gain.value = 0;
-        sysNode.connect(sysProc); sysProc.connect(sink); sink.connect(sysCtx.destination);
-        sysProc.onaudioprocess = (e) => {
-          const f = e.inputBuffer.getChannelData(0);
-          const out = new Int16Array(f.length);
-          for (let i = 0; i < f.length; i++) { const s = Math.max(-1, Math.min(1, f[i])); out[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
-          cue.systemPcm(out.buffer);
-        };
-        sysWorklet = { _legacy: true, proc: sysProc, node: sysNode, sink };
-      }
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      cue.log('system audio error: ' + message);
-      showStatus('Meeting audio could not be started. Grant screen/audio access to cue and try again.');
-    } finally {
-      sysStarting = false;
-    }
+      return { stream, audioStream: new MediaStream(tracks) };
+    },
+    activate: async ({ stream, audioStream }) => {
+      const capture = await activateCapture(audioStream, (pcm) => cue.systemPcm(pcm), 'system audio');
+      capture.stream = stream;
+      return capture;
+    },
+    disposeAcquired: (resource) => stopTracks(resource && resource.stream),
+    disposeActive: disconnectCapture,
+    onPhase: (phase, error) => cue.sourceUpdate('system', {
+      phase: error && error.code === 'unsupported' ? 'unsupported' : phase,
+      error: error ? sourceError(error) : null
+    })
+  });
+  function startSystemAudio() {
+    return systemCapture.start().catch((error) => {
+      cue.log('system audio error: ' + (error.message || String(error)));
+      showStatus(error.code === 'unsupported'
+        ? (error.message || 'Meeting audio capture is unavailable; microphone capture can continue.')
+        : 'Meeting audio could not be started. Grant screen/audio access to cue and try again.');
+      return null;
+    });
   }
-  function stopSystemAudio() {
-    if (sysWorklet) {
-      if (sysWorklet._legacy) {
-        sysWorklet.proc.disconnect(); sysWorklet.proc.onaudioprocess = null;
-        sysWorklet.node.disconnect(); sysWorklet.sink.disconnect();
-      } else {
-        sysWorklet.disconnect();
-      }
-      sysWorklet = null;
-    }
-    if (sysCtx) { sysCtx.close(); sysCtx = null; }
-    if (sysStream) { sysStream.getTracks().forEach((t) => t.stop()); sysStream = null; }
-  }
+  function stopSystemAudio() { systemCapture.stop(); }
 
   // ---- STT / VAD status helpers ------------------------------------------
   // Live dot states: 'off' | 'idle' | 'speaking' | 'transcribing'

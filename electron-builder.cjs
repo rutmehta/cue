@@ -28,7 +28,8 @@ const canNotarize =
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: "com.cue.overlay",
-  productName: "cue",
+  productName: "Cue",
+  executableName: "cue",
   asar: false,
   publish: null,
   artifactName: "${productName}-${version}-${os}-${arch}.${ext}",
@@ -39,6 +40,7 @@ module.exports = {
   directories: { buildResources: "build-resources" },
   afterPack: "scripts/after-pack.js",
   mac: {
+    icon: "icon.svg",
     target: [{ target: "zip", arch: ["x64", "arm64"] }],
     category: "public.app-category.productivity",
     // With a real cert, let electron-builder discover it and apply the hardened
@@ -62,6 +64,7 @@ module.exports = {
     },
   },
   win: {
+    icon: "icon.svg",
     target: [{ target: "nsis", arch: ["x64"] }],
     artifactName: "${productName}-win-${arch}.${ext}",
   },
@@ -74,6 +77,7 @@ module.exports = {
     shortcutName: "cue",
   },
   linux: {
+    icon: "icon.svg",
     target: [{ target: "AppImage", arch: ["x64", "arm64"] }],
     category: "Utility",
   },

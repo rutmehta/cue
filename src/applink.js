@@ -14,7 +14,7 @@
 
 const { app, dialog, ipcMain } = require('electron');
 const { AppLinkServer } = require('../vendor/app-link');
-const { describeState, consentCopy } = require('./applink-state');
+const { applyCaptureCommand, describeState, consentCopy } = require('./applink-state');
 
 let link = null;
 let consentSeq = 0;
@@ -116,15 +116,15 @@ function startAppLink(deps) {
   link.action('set_capturing', {
     description: 'Start or stop listening',
     inputSchema: { type: 'object', properties: { active: { type: 'boolean' } }, required: ['active'] },
-    handler: (args, { caller }) => {
-      const active = !!args.active;
-      deps.setCapturing(active);
+    handler: async (args, { caller }) => {
+      const requested = !!args.active;
+      const result = await applyCaptureCommand(requested, deps.setCapturing);
       link.record({
         level: 'info',
         event: 'applink_set_capturing',
-        msg: `${caller.name} ${active ? 'started' : 'stopped'} listening`,
+        msg: `${caller.name} ${result.capturing ? 'started' : 'stopped'} listening`,
       });
-      return { capturing: active };
+      return result;
     },
   });
 
