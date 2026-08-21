@@ -12,11 +12,15 @@ const LAST_PORT = 6029;
 const READINESS_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 2_000;
 const MIN_TRANSCRIPTION_TIMEOUT_MS = 10_000;
-const MAX_TRANSCRIPTION_TIMEOUT_MS = 120_000;
+const MAX_AUDIO_DURATION_MS = 30_000;
 const MIN_SAMPLE_RATE = 8_000;
 const MAX_SAMPLE_RATE = 192_000;
-const MAX_PCM16_BYTES = 256 * 1024 * 1024;
+const MAX_PCM16_BYTES = MAX_SAMPLE_RATE * 2 * MAX_AUDIO_DURATION_MS / 1000;
 const MAX_FLOAT32_BYTES = MAX_PCM16_BYTES * 2;
+const DEFAULT_MAX_CHANNEL_REQUESTS = 8;
+const DEFAULT_MAX_CHANNEL_RETAINED_BYTES = MAX_FLOAT32_BYTES + 8;
+const DEFAULT_MAX_RESULT_BYTES = 1024 * 1024;
+const DEFAULT_MAX_RESULT_MESSAGES = 64;
 
 function localError(code, message, action, details = null) {
   return new LocalSttError(code, message, action, details);
@@ -136,6 +140,31 @@ function errorRecord(error) {
   };
 }
 
+function deepCloneFreeze(value) {
+  if (value === null || typeof value !== 'object') return value;
+  const clone = Array.isArray(value) ? [] : {};
+  for (const key of Object.keys(value)) clone[key] = deepCloneFreeze(value[key]);
+  return Object.freeze(clone);
+}
+
+function normalizeLimits(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Parakeet limits must be an object.');
+  }
+  const limits = {
+    maxChannelRequests: value.maxChannelRequests ?? DEFAULT_MAX_CHANNEL_REQUESTS,
+    maxChannelRetainedBytes: value.maxChannelRetainedBytes ?? DEFAULT_MAX_CHANNEL_RETAINED_BYTES,
+    maxResultBytes: value.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
+    maxResultMessages: value.maxResultMessages ?? DEFAULT_MAX_RESULT_MESSAGES
+  };
+  for (const [name, limit] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(limit) || limit <= 0) {
+      throw new TypeError(`Parakeet ${name} must be a positive safe integer.`);
+    }
+  }
+  return Object.freeze(limits);
+}
+
 function consumeRejection(value) {
   if (!value || (typeof value !== 'object' && typeof value !== 'function')) return;
   let then;
@@ -157,6 +186,7 @@ class ParakeetTranscriber {
     this._clearTimeout = dependencies.clearTimeout || clearTimeout;
     this._now = dependencies.now || Date.now;
     this._stopProcess = dependencies.stopProcess || defaultStopProcess;
+    this._limits = normalizeLimits(dependencies.limits);
 
     this.id = 'parakeet';
     this._state = 'idle';
@@ -166,9 +196,12 @@ class ParakeetTranscriber {
     this._child = null;
     this._childListeners = null;
     this._startPromise = null;
-    this._cancelStart = null;
+    this._cancelGenerationStart = null;
+    this._cancelReadiness = null;
     this._stopPromise = null;
     this._preserveStopError = false;
+    this._failedChildCleanup = null;
+    this._ownedChildren = new Map();
     this._observers = new Set();
     this._queues = new Map();
     this._active = new Set();
@@ -188,9 +221,10 @@ class ParakeetTranscriber {
   }
 
   _emitStatus(status) {
-    const snapshot = Object.freeze({ id: this.id, ...status });
+    const value = { id: this.id, ...status };
     for (const observer of [...this._observers]) {
       try {
+        const snapshot = deepCloneFreeze(value);
         const result = observer(snapshot);
         consumeRejection(result);
       } catch {}
@@ -237,26 +271,59 @@ class ParakeetTranscriber {
     }
 
     if (this._state === 'starting' && this._startPromise) return this._startPromise;
-    if (this._state === 'ready') return Promise.resolve(this._inspection);
+    if (this._state === 'ready') return Promise.resolve(normalizeEngineInspection(this._inspection));
     if (this._state === 'stopping' && this._stopPromise) {
       return this._stopPromise.then(() => this.start(inspection));
     }
 
     const generation = ++this._generation;
     this._state = 'starting';
-    this._inspection = inspection;
+    this._inspection = deepCloneFreeze(inspection);
+    let settleResolve;
+    let settleReject;
+    let settled = false;
+    const promise = new Promise((resolve, reject) => {
+      settleResolve = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      settleReject = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+    });
+    this._startPromise = promise;
+    this._cancelGenerationStart = settleReject;
     this._emitStatus({ status: 'starting', message: 'Starting local Parakeet.' });
-    const promise = this._performStart(inspection, generation).catch((error) => {
+    Promise.resolve().then(async () => {
+      if (this._failedChildCleanup) await this._failedChildCleanup;
+      if (generation !== this._generation || this._state !== 'starting') {
+        throw localError('engine_stopped', 'Parakeet stopped before it became ready.', 'Start Parakeet again.');
+      }
+      await this._performStart(this._inspection, generation);
+      settleResolve(normalizeEngineInspection(this._inspection));
+    }).catch((error) => {
       if (generation === this._generation && this._state === 'starting') {
         this._state = 'error';
         this._emitStatus({ status: 'error', error: errorRecord(error) });
       }
-      throw error;
+      settleReject(error);
     });
-    this._startPromise = promise;
     promise.then(
-      () => { if (this._startPromise === promise) this._startPromise = null; },
-      () => { if (this._startPromise === promise) this._startPromise = null; }
+      () => {
+        if (this._startPromise === promise) {
+          this._startPromise = null;
+          this._cancelGenerationStart = null;
+        }
+      },
+      () => {
+        if (this._startPromise === promise) {
+          this._startPromise = null;
+          this._cancelGenerationStart = null;
+        }
+      }
     );
     return promise;
   }
@@ -312,6 +379,7 @@ class ParakeetTranscriber {
       throw error;
     }
 
+    this._trackOwnedChild(child, detached);
     this._child = child;
     this._port = port;
     return new Promise((resolve, reject) => {
@@ -325,7 +393,7 @@ class ParakeetTranscriber {
           readinessTimer = null;
         }
         removeListener(child.stderr, 'data', onData);
-        if (this._cancelStart === cancelStart) this._cancelStart = null;
+        if (this._cancelReadiness === cancelStart) this._cancelReadiness = null;
       };
       const removeChildListeners = () => {
         removeListener(child, 'error', onError);
@@ -346,6 +414,9 @@ class ParakeetTranscriber {
           this._emitStatus({ status: 'error', error: errorRecord(error) });
         }
         reject(error);
+        if (generation === this._generation && this._cancelGenerationStart) {
+          this._cancelGenerationStart(error);
+        }
       };
       const cancelStart = (error) => failStart(error, true);
       const onData = (chunk) => {
@@ -368,8 +439,13 @@ class ParakeetTranscriber {
           'Verify that the configured runtime is executable and compatible.',
           { cause: String(cause && cause.message || cause) }
         );
-        if (!settled) failStart(error);
-        else this._handleChildFailure(child, generation, error, true);
+        if (!settled) {
+          failStart(error, true);
+          this._beginFailedChildCleanup(child);
+        } else {
+          this._handleChildFailure(child, generation, error, true);
+          this._beginFailedChildCleanup(child);
+        }
       };
       const onExit = (code, signal) => {
         const error = localError(
@@ -387,7 +463,7 @@ class ParakeetTranscriber {
       };
 
       this._childListeners = { child, onError, onExit };
-      this._cancelStart = cancelStart;
+      this._cancelReadiness = cancelStart;
       addListener(child.stderr, 'data', onData);
       addListener(child, 'error', onError);
       addListener(child, 'exit', onExit);
@@ -411,11 +487,72 @@ class ParakeetTranscriber {
     this._childListeners = null;
   }
 
+  _trackOwnedChild(child, detached) {
+    if (this._ownedChildren.has(child)) return this._ownedChildren.get(child);
+    let resolveExited;
+    const exited = new Promise((resolve) => { resolveExited = resolve; });
+    const record = {
+      child, detached, exited, disposal: null,
+      onError: () => {},
+      onExit: () => {
+        removeListener(child, 'error', record.onError);
+        removeListener(child, 'exit', record.onExit);
+        this._ownedChildren.delete(child);
+        resolveExited();
+      }
+    };
+    this._ownedChildren.set(child, record);
+    addListener(child, 'error', record.onError);
+    addListener(child, 'exit', record.onExit);
+    return record;
+  }
+
+  _disposeOwnedChild(child) {
+    const record = this._ownedChildren.get(child);
+    if (!record || child.exitCode !== null) return Promise.resolve();
+    if (record.disposal) return record.disposal;
+    const disposal = (async () => {
+      let timer = null;
+      const exited = await Promise.race([
+        record.exited.then(() => true),
+        new Promise((resolve) => {
+          timer = this._setTimeout(() => resolve(false), STOP_TIMEOUT_MS);
+        })
+      ].map((promise) => Promise.resolve(promise)));
+      if (timer !== null) this._clearTimeout(timer);
+      if (exited) return;
+      this._signalChild(child, 'SIGKILL', record.detached);
+    })();
+    record.disposal = Promise.resolve().then(() => {
+      this._signalChild(child, 'SIGTERM', record.detached);
+      return disposal;
+    }).finally(() => {
+      if (record.disposal) record.disposal = null;
+    });
+    return record.disposal;
+  }
+
+  _beginFailedChildCleanup(child) {
+    this._removeChildListeners(child);
+    const cleanup = this._disposeOwnedChild(child).then(() => {
+      this._removeChildListeners(child);
+      if (this._child === child) {
+        this._child = null;
+        this._port = null;
+      }
+    });
+    this._failedChildCleanup = cleanup;
+    cleanup.finally(() => {
+      if (this._failedChildCleanup === cleanup) this._failedChildCleanup = null;
+    }).catch(() => {});
+    return cleanup;
+  }
+
   _handleChildFailure(child, generation, error, retainChild = false) {
     if (generation !== this._generation || child !== this._child || this._state === 'error') return;
     this._state = 'error';
+    this._removeChildListeners(child);
     if (!retainChild) {
-      this._removeChildListeners(child);
       this._child = null;
       this._port = null;
     }
@@ -434,11 +571,22 @@ class ParakeetTranscriber {
         throw new TypeError('Transcription channel must be a non-empty string.');
       }
       validateSampleRate(options.sampleRate);
+      const pcmBytes = asByteBuffer(options.pcm16, 'PCM audio', MAX_PCM16_BYTES);
+      if (pcmBytes.byteLength === 0) throw new RangeError('PCM audio must contain audio samples.');
+      if (pcmBytes.byteLength % 2 !== 0) {
+        throw new RangeError('PCM audio must contain complete 16-bit samples.');
+      }
+      const durationMs = (pcmBytes.byteLength / 2) / options.sampleRate * 1000;
+      if (durationMs > MAX_AUDIO_DURATION_MS) {
+        throw localError(
+          'audio_too_large',
+          'Parakeet accepts at most 30 seconds of audio per request.',
+          'Split the audio into segments of 30 seconds or less.'
+        );
+      }
       const float32 = pcm16ToFloat32Buffer(options.pcm16);
       frame = buildOfflineMessage(float32, options.sampleRate);
-      const sampleCount = float32.byteLength / 4;
-      const durationMs = sampleCount / options.sampleRate * 1000;
-      timeoutMs = Math.min(MAX_TRANSCRIPTION_TIMEOUT_MS, Math.max(MIN_TRANSCRIPTION_TIMEOUT_MS, durationMs * 4));
+      timeoutMs = Math.max(MIN_TRANSCRIPTION_TIMEOUT_MS, durationMs * 4);
       if (this._state !== 'ready' || !this._child || !this._port) {
         throw localError('engine_not_ready', 'Parakeet is not ready to transcribe.', 'Start Parakeet and try again.');
       }
@@ -446,15 +594,28 @@ class ParakeetTranscriber {
       return Promise.reject(error);
     }
 
+    let queue = this._queues.get(channel);
+    if (!queue) {
+      queue = { running: false, pending: [], requestCount: 0, retainedBytes: 0 };
+      this._queues.set(channel, queue);
+    }
+    if (queue.requestCount >= this._limits.maxChannelRequests ||
+        queue.retainedBytes + frame.byteLength > this._limits.maxChannelRetainedBytes) {
+      if (!queue.running && queue.pending.length === 0) this._queues.delete(channel);
+      return Promise.reject(localError(
+        'engine_overloaded',
+        `Parakeet already has too much queued work for channel ${channel}.`,
+        'Wait for the current transcription work to finish and try again.'
+      ));
+    }
+
     return new Promise((resolve, reject) => {
       const request = {
-        channel, frame, timeoutMs, resolve, reject, settled: false, abort: null
+        channel, frame, timeoutMs, resolve, reject, settled: false, abort: null,
+        queue, retainedBytes: frame.byteLength, released: false
       };
-      let queue = this._queues.get(channel);
-      if (!queue) {
-        queue = { running: false, pending: [] };
-        this._queues.set(channel, queue);
-      }
+      queue.requestCount += 1;
+      queue.retainedBytes += frame.byteLength;
       queue.pending.push(request);
       this._drainChannel(channel, queue);
     });
@@ -463,6 +624,11 @@ class ParakeetTranscriber {
   _settleRequest(request, error, value) {
     if (request.settled) return;
     request.settled = true;
+    if (!request.released && request.queue) {
+      request.released = true;
+      request.queue.requestCount = Math.max(0, request.queue.requestCount - 1);
+      request.queue.retainedBytes = Math.max(0, request.queue.retainedBytes - request.retainedBytes);
+    }
     if (error) request.reject(error);
     else request.resolve(value);
   }
@@ -500,30 +666,49 @@ class ParakeetTranscriber {
       let doneSent = false;
       let closeRequested = false;
       const results = [];
+      let resultBytes = 0;
+      let resultMessages = 0;
       let resultError = null;
       const startedAt = this._now();
 
-      const cleanup = () => {
+      const clearTimer = () => {
         if (timer !== null) {
           this._clearTimeout(timer);
           timer = null;
         }
+      };
+      const cleanup = () => {
+        clearTimer();
         removeListener(socket, 'open', onOpen);
         removeListener(socket, 'message', onMessage);
         removeListener(socket, 'error', onError);
         removeListener(socket, 'close', onClose);
       };
-      const close = () => {
+      const abortSocket = () => {
         if (closeRequested) return;
         closeRequested = true;
-        safeClose(socket);
+        if (!socket) {
+          cleanup();
+          return;
+        }
+        if (socket.readyState === 3) {
+          cleanup();
+          return;
+        }
+        if (socket.readyState === 0) {
+          safeClose(socket);
+          return;
+        }
+        if (typeof socket.terminate === 'function') {
+          try { socket.terminate(); } catch { safeClose(socket); }
+        } else safeClose(socket);
       };
       const fail = (error) => {
         if (settled) return;
         settled = true;
-        cleanup();
-        close();
+        clearTimer();
         reject(error);
+        abortSocket();
       };
       const succeed = () => {
         if (settled) return;
@@ -557,6 +742,19 @@ class ParakeetTranscriber {
         if (settled) return;
         let text;
         try {
+          let byteLength;
+          if (typeof data === 'string') byteLength = Buffer.byteLength(data);
+          else if (Buffer.isBuffer(data) || ArrayBuffer.isView(data) || data instanceof ArrayBuffer) byteLength = data.byteLength;
+          else byteLength = Buffer.byteLength(String(data));
+          resultMessages += 1;
+          resultBytes += byteLength;
+          if (resultMessages > this._limits.maxResultMessages || resultBytes > this._limits.maxResultBytes) {
+            throw localError(
+              'protocol_failure',
+              'Parakeet returned more transcription data than Cue accepts.',
+              'Restart the local speech engine and try a shorter segment.'
+            );
+          }
           if (Buffer.isBuffer(data)) text = data.toString('utf8');
           else if (ArrayBuffer.isView(data)) text = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8');
           else if (data instanceof ArrayBuffer) text = Buffer.from(data).toString('utf8');
@@ -574,6 +772,10 @@ class ParakeetTranscriber {
           }
           results.push(parsed.text.trim());
         } catch (cause) {
+          if (cause instanceof LocalSttError) {
+            fail(cause);
+            return;
+          }
           resultError = localError(
             'protocol_failure',
             'Parakeet returned an empty or malformed transcription result.',
@@ -590,9 +792,14 @@ class ParakeetTranscriber {
         { cause: String(cause && cause.message || cause) }
       ));
       const onClose = () => {
-        if (settled) return;
+        if (settled) {
+          cleanup();
+          return;
+        }
         if (results.length === 0) {
-          fail(resultError || localError(
+          settled = true;
+          cleanup();
+          reject(resultError || localError(
             'protocol_failure',
             'Parakeet closed without a transcription result.',
             'Restart the local speech engine and try again.'
@@ -604,7 +811,9 @@ class ParakeetTranscriber {
 
       request.abort = (error) => fail(error);
       try {
-        socket = new this._WebSocket(`ws://${LOOPBACK_HOST}:${this._port}`);
+        socket = new this._WebSocket(`ws://${LOOPBACK_HOST}:${this._port}`, {
+          maxPayload: this._limits.maxResultBytes
+        });
         addListener(socket, 'open', onOpen);
         addListener(socket, 'message', onMessage);
         addListener(socket, 'error', onError);
@@ -637,6 +846,7 @@ class ParakeetTranscriber {
   }
 
   _signalChild(child, signal, detached) {
+    if (!child || child.exitCode !== null) return;
     try { consumeRejection(this._stopProcess(child, signal, { detached })); } catch {}
   }
 
@@ -649,7 +859,7 @@ class ParakeetTranscriber {
       if (!preserveError) this._preserveStopError = false;
       return this._stopPromise;
     }
-    if (this._state === 'idle' && !this._child && this._active.size === 0 && this._queues.size === 0) {
+    if (this._state === 'idle' && !this._child && this._ownedChildren.size === 0 && this._active.size === 0 && this._queues.size === 0) {
       return Promise.resolve();
     }
     this._preserveStopError = preserveError;
@@ -680,38 +890,19 @@ class ParakeetTranscriber {
       'Parakeet stopped before transcription completed.',
       'Start Parakeet again.'
     );
-    if (this._cancelStart) this._cancelStart(stoppedError);
+    if (this._cancelGenerationStart) this._cancelGenerationStart(stoppedError);
+    if (this._cancelReadiness) this._cancelReadiness(stoppedError);
     this._rejectAll(stoppedError);
 
     const child = this._child;
-    const detached = this._platform !== 'win32';
-    if (child && child.exitCode === null) {
-      let exitTimer = null;
-      let onExit;
-      const exited = new Promise((resolve) => {
-        let settled = false;
-        const finish = (value) => {
-          if (settled) return;
-          settled = true;
-          if (exitTimer !== null) this._clearTimeout(exitTimer);
-          removeListener(child, 'exit', onExit);
-          resolve(value);
-        };
-        onExit = () => finish(true);
-        addListener(child, 'exit', onExit);
-        exitTimer = this._setTimeout(() => finish(false), STOP_TIMEOUT_MS);
-      });
-      this._signalChild(child, 'SIGTERM', detached);
-      if (!await exited) {
-        this._signalChild(child, 'SIGKILL', detached);
-      }
-    }
+    await Promise.all([...this._ownedChildren.keys()].map((ownedChild) => this._disposeOwnedChild(ownedChild)));
 
     this._removeChildListeners(child);
     this._child = null;
     this._port = null;
     this._inspection = null;
-    this._cancelStart = null;
+    this._cancelGenerationStart = null;
+    this._cancelReadiness = null;
     this._queues.clear();
     this._active.clear();
     if (this._preserveStopError) this._state = 'error';

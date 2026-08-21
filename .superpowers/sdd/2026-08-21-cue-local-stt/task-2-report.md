@@ -24,3 +24,14 @@
 - OpenWhispr assets remain read-only; the adapter launches its own detached child in a temporary-directory cwd and only signals that owned child/process group.
 - Transcription timeout is bounded to 10–120 seconds, with the value inside that range computed as four times audio duration.
 - No remaining implementation concerns identified for this task.
+
+## Review Round 1
+
+- Reworked WebSocket aborts around terminal state: CONNECTING sockets retain their error sink through `close`, while established/closing sockets use forced termination. Real local `ws` subprocess tests under strict unhandled-rejection mode verify both CONNECTING abort and an OPEN peer that ignores the close handshake release their TCP handles.
+- Added explicit owned-child records. A process `error` before or after readiness now starts bounded TERM/KILL cleanup, removes functional listeners, and makes restart join that cleanup. If an injected stopper throws or never settles, the child remains tracked by terminal-only listeners until its actual exit and cannot be confused with an unrelated process.
+- Bounded audio to 30 seconds, matching the planned at-most-25-second segmentation contract. Inference timeout is now exactly `max(10 seconds, audio duration × 4)` with no independent cap.
+- Bounded each channel by active-plus-pending count and retained frame bytes. Added stable `engine_overloaded` rejection, a one-megabyte WebSocket `maxPayload`/aggregate-result bound, and a 64-message result bound.
+- Installed the generation's deferred start promise before publishing `starting`, so reentrant observers and concurrent callers join the same generation.
+- Deep-froze the retained normalized inspection and return fresh normalized clones. Status payloads are deep-cloned and frozen independently per observer.
+- RED verification reproduced every review finding before its fix, including the real `ws` uncaught CONNECTING error and retained OPEN TCP peer.
+- Post-review verification: 40 focused tests and 294 full-suite tests pass; syntax, diff, and natural-exit checks pass.

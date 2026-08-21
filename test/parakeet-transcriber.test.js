@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const path = require('node:path');
 const test = require('node:test');
@@ -63,9 +64,10 @@ class FakeChild extends EventEmitter {
 }
 
 class FakeSocket extends EventEmitter {
-  constructor(url) {
+  constructor(url, options) {
     super();
     this.url = url;
+    this.options = options;
     this.sent = [];
     this.closeCalls = 0;
     this.readyState = 0;
@@ -78,6 +80,12 @@ class FakeSocket extends EventEmitter {
   close() {
     this.closeCalls += 1;
     this.readyState = 2;
+  }
+
+  terminate() {
+    this.terminateCalls = (this.terminateCalls || 0) + 1;
+    this.readyState = 3;
+    this.emit('close', 1006);
   }
 
   open() {
@@ -111,8 +119,8 @@ function createHarness(overrides = {}) {
   };
   class WebSocket extends FakeSocket {
     static OPEN = 1;
-    constructor(url) {
-      super(url);
+    constructor(url, options) {
+      super(url, options);
       sockets.push(this);
     }
   }
@@ -142,6 +150,24 @@ function createHarness(overrides = {}) {
   return { child, clock, dependencies, inspection, portCalls, sockets, spawnCalls, stopCalls };
 }
 
+function useDistinctChildren(harness, children, stopBehavior = 'exit') {
+  const order = [];
+  harness.dependencies.spawn = (...args) => {
+    harness.spawnCalls.push(args);
+    const child = children[harness.spawnCalls.length - 1];
+    order.push(`spawn:${child.pid}`);
+    return child;
+  };
+  harness.dependencies.stopProcess = (target, signal, options) => {
+    harness.stopCalls.push({ target, signal, options });
+    order.push(`${signal}:${target.pid}`);
+    if (stopBehavior === 'throw') throw new Error('stopper failed');
+    if (stopBehavior === 'hang') return new Promise(() => {});
+    if (signal === 'SIGTERM') target.exit(0, signal);
+  };
+  return order;
+}
+
 async function startReady(engine, harness, chunks = ['Listening on: 127.0.0.1:6006\n']) {
   const started = engine.start(harness.inspection);
   await tick();
@@ -151,6 +177,120 @@ async function startReady(engine, harness, chunks = ['Listening on: 127.0.0.1:60
 
 function expectCode(promise, code) {
   return assert.rejects(promise, (error) => error && error.name === 'LocalSttError' && error.code === code);
+}
+
+function runStrictWebSocketAbortScenario(mode) {
+  const modulePath = require.resolve('../src/parakeet-transcriber');
+  const script = String.raw`
+    const assert = require('node:assert/strict');
+    const crypto = require('node:crypto');
+    const { EventEmitter } = require('node:events');
+    const net = require('node:net');
+    const { ParakeetTranscriber } = require(${JSON.stringify(modulePath)});
+    const WebSocket = require('ws');
+
+    class Child extends EventEmitter {
+      constructor() {
+        super(); this.pid = 9001; this.exitCode = null;
+        this.stderr = new EventEmitter(); this.stdout = new EventEmitter();
+      }
+      exit() { this.exitCode = 0; this.emit('exit', 0, 'SIGTERM'); }
+    }
+
+    async function listenInRange(connection) {
+      for (let port = 6006; port <= 6029; port += 1) {
+        const server = net.createServer(connection);
+        const listening = await new Promise((resolve) => {
+          server.once('error', () => resolve(false));
+          server.listen(port, '127.0.0.1', () => resolve(true));
+        });
+        if (listening) return { server, port };
+      }
+      throw new Error('No test port available.');
+    }
+
+    (async () => {
+      const sockets = new Set();
+      let upgradedResolve;
+      const upgraded = new Promise((resolve) => { upgradedResolve = resolve; });
+      let frameResolve;
+      const frameReceived = new Promise((resolve) => { frameResolve = resolve; });
+      const connection = (socket) => {
+        sockets.add(socket);
+        socket.once('close', () => sockets.delete(socket));
+        if (${JSON.stringify(mode)} === 'connecting') {
+          socket.resume();
+          return;
+        }
+        let request = '';
+        socket.on('data', (chunk) => {
+          if (socket.handshakeSent) {
+            frameResolve();
+            return;
+          }
+          request += chunk.toString('latin1');
+          if (!request.includes('\r\n\r\n') || socket.handshakeSent) return;
+          socket.handshakeSent = true;
+          const key = /Sec-WebSocket-Key:\s*([^\r\n]+)/i.exec(request)[1].trim();
+          const accept = crypto.createHash('sha1')
+            .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+            .digest('base64');
+          socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
+            'Upgrade: websocket\r\nConnection: Upgrade\r\n' +
+            'Sec-WebSocket-Accept: ' + accept + '\r\n\r\n');
+          upgradedResolve();
+        });
+      };
+      const { server, port } = await listenInRange(connection);
+      const child = new Child();
+      const inspection = {
+        id: 'parakeet', healthy: true,
+        runtime: { path: '/fake/parakeet' }, model: { path: '/fake/model' }, errors: []
+      };
+      const engine = new ParakeetTranscriber({
+        inspect: async () => inspection,
+        findPort: async () => port,
+        spawn: () => child,
+        WebSocket,
+        cpuCount: 4,
+        tempDirectory: '/tmp',
+        stopProcess: (target) => target.exit()
+      });
+      let failure;
+      try {
+        console.log('stage:start');
+        const starting = engine.start(inspection);
+        await new Promise((resolve) => setImmediate(resolve));
+        child.stderr.emit('data', Buffer.from('Listening on:'));
+        await starting;
+        console.log('stage:ready');
+        const request = engine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+        if (${JSON.stringify(mode)} === 'open') await frameReceived;
+        else await new Promise((resolve) => setTimeout(resolve, 30));
+        console.log('stage:socket-ready');
+        await engine.stop();
+        console.log('stage:stopped');
+        const code = await request.then(() => 'resolved', (error) => error.code);
+        assert.equal(code, 'engine_stopped');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        console.log('stage:peer-count:' + sockets.size);
+        assert.equal(sockets.size, 0, 'aborted WebSocket must release its TCP peer');
+      } catch (error) {
+        failure = error;
+      } finally {
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve) => server.close(resolve));
+        console.log('stage:server-closed');
+      }
+      if (failure) throw failure;
+    })().catch((error) => {
+      console.error(error && error.stack || error);
+      process.exitCode = 1;
+    });
+  `;
+  return spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', script], {
+    encoding: 'utf8', timeout: 4000
+  });
 }
 
 test('builds sherpa offline frame with little-endian header and float32 audio', () => {
@@ -196,6 +336,22 @@ test('inspect normalizes a fresh inspection and does not retain caller objects',
   assert.deepEqual(result.model, {
     path: harness.inspection.model.path, source: 'unknown', fingerprint: null
   });
+});
+
+test('stores an immutable inspection and never returns its retained instance', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const started = engine.start(harness.inspection);
+  await tick();
+  harness.child.stderr.emit('data', Buffer.from('Listening on:'));
+  const first = await started;
+  first.runtime.path = '/mutated/runtime';
+  first.model.path = '/mutated/model';
+  const second = await engine.start(harness.inspection);
+  assert.notStrictEqual(second, first);
+  assert.equal(second.runtime.path, harness.inspection.runtime.path);
+  assert.equal(second.model.path, harness.inspection.model.path);
+  await engine.stop();
 });
 
 test('rejects unhealthy or wrong-engine inspection and invalid dependencies before port lookup or spawn', async () => {
@@ -248,6 +404,26 @@ test('finds a bounded loopback port and spawns once with exact Task 1 arguments'
   await engine.stop();
 });
 
+test('publishes a stable start promise before a reentrant status observer can start again', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  let reentrant;
+  let observed = false;
+  engine.onStatus((status) => {
+    if (status.status === 'starting' && !observed) {
+      observed = true;
+      reentrant = engine.start(harness.inspection);
+    }
+  });
+  const original = engine.start(harness.inspection);
+  assert.strictEqual(reentrant, original);
+  await tick();
+  assert.equal(harness.spawnCalls.length, 1);
+  harness.child.stderr.emit('data', Buffer.from('Listening on:'));
+  await Promise.all([original, reentrant]);
+  await engine.stop();
+});
+
 test('detects readiness even when a long stderr chunk follows the marker', async () => {
   const harness = createHarness();
   const engine = new ParakeetTranscriber(harness.dependencies);
@@ -292,6 +468,33 @@ test('status observer failures do not break start, exit handling, or stop', asyn
   assert.deepEqual(statuses.slice(0, 3), ['starting', 'ready', 'error']);
 });
 
+test('deep-clones and freezes status payloads separately for each observer', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const seen = [];
+  engine.onStatus((status) => {
+    if (status.status !== 'error') return;
+    seen.push(status);
+    status.error.code = 'mutated';
+    status.error.details.code = 999;
+  });
+  engine.onStatus((status) => {
+    if (status.status === 'error') seen.push(status);
+  });
+  await startReady(engine, harness);
+  harness.child.exit(7, null);
+  await tick();
+  assert.equal(seen.length, 2);
+  assert.notStrictEqual(seen[0], seen[1]);
+  assert.notStrictEqual(seen[0].error, seen[1].error);
+  assert.equal(Object.isFrozen(seen[0]), true);
+  assert.equal(Object.isFrozen(seen[0].error), true);
+  assert.equal(Object.isFrozen(seen[0].error.details), true);
+  assert.equal(seen[1].error.code, 'engine_exit');
+  assert.equal(seen[1].error.details.code, 7);
+  await engine.stop();
+});
+
 test('consumes rejected thenables returned by status observers', async () => {
   const harness = createHarness();
   const engine = new ParakeetTranscriber(harness.dependencies);
@@ -309,19 +512,44 @@ test('consumes rejected thenables returned by status observers', async () => {
 
 test('spawn error rejects once, cleans readiness resources, and permits restart', async () => {
   const harness = createHarness();
+  const firstChild = new FakeChild();
+  const secondChild = new FakeChild();
+  firstChild.pid = 4901;
+  secondChild.pid = 4902;
+  useDistinctChildren(harness, [firstChild, secondChild]);
   const engine = new ParakeetTranscriber(harness.dependencies);
   const first = engine.start(harness.inspection);
   await tick();
-  harness.child.emit('error', new Error('ENOEXEC'));
-  harness.child.exit(1, null);
+  firstChild.emit('error', new Error('ENOEXEC'));
   await expectCode(first, 'runtime_spawn_failed');
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.clock.size, 0);
 
   const second = engine.start(harness.inspection);
-  await tick();
-  harness.child.stderr.emit('data', Buffer.from('Listening on: 6006'));
+  await new Promise((resolve) => setImmediate(resolve));
+  secondChild.stderr.emit('data', Buffer.from('Listening on: 6006'));
   await second;
   assert.equal(harness.spawnCalls.length, 2);
+  await engine.stop();
+});
+
+test('a pre-readiness child error disposes that exact child before restart spawns another', async () => {
+  const harness = createHarness();
+  const first = new FakeChild();
+  const second = new FakeChild();
+  first.pid = 5001;
+  second.pid = 5002;
+  const order = useDistinctChildren(harness, [first, second]);
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const failed = engine.start(harness.inspection);
+  await tick();
+  first.emit('error', new Error('spawn pipe failed'));
+  await expectCode(failed, 'runtime_spawn_failed');
+  const restarted = engine.start(harness.inspection);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order.slice(0, 3), ['spawn:5001', 'SIGTERM:5001', 'spawn:5002']);
+  second.stderr.emit('data', Buffer.from('Listening on:'));
+  await restarted;
   await engine.stop();
 });
 
@@ -408,6 +636,7 @@ test('sends one binary frame, accumulates JSON results, sends literal Done, and 
   const socket = harness.sockets[0];
   socket.open();
   assert.equal(socket.url, 'ws://127.0.0.1:6006');
+  assert.deepEqual(socket.options, { maxPayload: 1024 * 1024 });
   assert.equal(socket.sent.length, 1);
   assert.ok(Buffer.isBuffer(socket.sent[0]));
   assert.equal(socket.sent[0].readInt32LE(0), 16000);
@@ -477,7 +706,19 @@ test('WebSocket constructor and emitted errors reject with stable protocol error
   await engine.stop();
 });
 
-test('transcription timeout is duration-based with 10-second floor and 120-second ceiling', async () => {
+test('real ws CONNECTING abort cannot emit an uncaught error or retain its TCP handle', () => {
+  const result = runStrictWebSocketAbortScenario('connecting');
+  assert.equal(result.signal, null, `${result.stderr}\n${result.stdout}`);
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+});
+
+test('real ws OPEN abort force-closes an uncooperative peer without retained handles', () => {
+  const result = runStrictWebSocketAbortScenario('open');
+  assert.equal(result.signal, null, `${result.stderr}\n${result.stdout}`);
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+});
+
+test('transcription timeout is exactly four times supported duration with a 10-second floor', async () => {
   const shortHarness = createHarness();
   const shortEngine = new ParakeetTranscriber(shortHarness.dependencies);
   await startReady(shortEngine, shortHarness);
@@ -493,13 +734,86 @@ test('transcription timeout is duration-based with 10-second floor and 120-secon
   const longEngine = new ParakeetTranscriber(longHarness.dependencies);
   await startReady(longEngine, longHarness);
   const longRequest = longEngine.transcribe({
-    channel: 'system', pcm16: Buffer.alloc(16000 * 2 * 40), sampleRate: 16000
+    channel: 'system', pcm16: Buffer.alloc(16000 * 2 * 30), sampleRate: 16000
   });
   await tick();
   assert.deepEqual(longHarness.clock.delays(), [120000]);
   await longHarness.clock.advance(120000);
   await expectCode(longRequest, 'transcription_timeout');
   await longEngine.stop();
+});
+
+test('accepts at most 30 seconds of audio and rejects longer input before opening a socket', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  await startReady(engine, harness);
+  const tooLong = Buffer.alloc((16000 * 30 + 1) * 2);
+  const rejected = expectCode(
+    engine.transcribe({ channel: 'mic', pcm16: tooLong, sampleRate: 16000 }),
+    'audio_too_large'
+  );
+  await tick();
+  assert.equal(harness.sockets.length, 0);
+  await rejected;
+  await engine.stop();
+});
+
+test('bounds active plus queued requests and retained frame bytes per channel', async () => {
+  const requestHarness = createHarness({ dependencies: {
+    limits: { maxChannelRequests: 2, maxChannelRetainedBytes: 1024, maxResultBytes: 1024, maxResultMessages: 8 }
+  } });
+  const requestEngine = new ParakeetTranscriber(requestHarness.dependencies);
+  await startReady(requestEngine, requestHarness);
+  const first = requestEngine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+  const second = requestEngine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+  const third = requestEngine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+  const requestOutcome = await Promise.race([
+    third.then(() => 'resolved', (error) => error.code),
+    new Promise((resolve) => setImmediate(() => resolve('pending')))
+  ]);
+  await requestEngine.stop();
+  if (requestOutcome === 'pending') await expectCode(third, 'engine_stopped');
+  assert.equal(requestOutcome, 'engine_overloaded');
+  await Promise.all([expectCode(first, 'engine_stopped'), expectCode(second, 'engine_stopped')]);
+
+  const byteHarness = createHarness({ dependencies: {
+    limits: { maxChannelRequests: 8, maxChannelRetainedBytes: 24, maxResultBytes: 1024, maxResultMessages: 8 }
+  } });
+  const byteEngine = new ParakeetTranscriber(byteHarness.dependencies);
+  await startReady(byteEngine, byteHarness);
+  const byteFirst = byteEngine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+  const byteSecond = byteEngine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+  const byteThird = byteEngine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+  const byteOutcome = await Promise.race([
+    byteThird.then(() => 'resolved', (error) => error.code),
+    new Promise((resolve) => setImmediate(() => resolve('pending')))
+  ]);
+  await byteEngine.stop();
+  if (byteOutcome === 'pending') await expectCode(byteThird, 'engine_stopped');
+  assert.equal(byteOutcome, 'engine_overloaded');
+  await Promise.all([expectCode(byteFirst, 'engine_stopped'), expectCode(byteSecond, 'engine_stopped')]);
+});
+
+test('bounds WebSocket result message count and total bytes', async () => {
+  for (const [limits, messages] of [
+    [{ maxResultMessages: 2, maxResultBytes: 1024 }, ['one', 'two', 'three']],
+    [{ maxResultMessages: 8, maxResultBytes: 10 }, ['12345678901']]
+  ]) {
+    const harness = createHarness({ dependencies: {
+      limits: { maxChannelRequests: 8, maxChannelRetainedBytes: 1024, ...limits }
+    } });
+    const engine = new ParakeetTranscriber(harness.dependencies);
+    await startReady(engine, harness);
+    const request = engine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate: 16000 });
+    await tick();
+    const socket = harness.sockets[0];
+    socket.open();
+    for (const message of messages) socket.emit('message', message);
+    if (socket.readyState !== 3) socket.finish();
+    await expectCode(request, 'protocol_failure');
+    assert.equal(socket.terminateCalls, 1);
+    await engine.stop();
+  }
 });
 
 test('serializes requests within a channel while mic and system run concurrently', async () => {
@@ -569,6 +883,64 @@ test('child error after readiness retains and terminates the owned process durin
   await engine.stop();
   assert.deepEqual(harness.stopCalls.map((call) => call.signal), ['SIGTERM']);
   assert.equal(harness.stopCalls[0].target, harness.child);
+});
+
+test('a post-readiness child error joins bounded cleanup before replacing its owned child', async () => {
+  const harness = createHarness();
+  const first = new FakeChild();
+  const second = new FakeChild();
+  first.pid = 5101;
+  second.pid = 5102;
+  const order = useDistinctChildren(harness, [first, second]);
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const initial = engine.start(harness.inspection);
+  await tick();
+  first.stderr.emit('data', Buffer.from('Listening on:'));
+  await initial;
+  first.emit('error', new Error('runtime pipe failed'));
+  const restarted = engine.start(harness.inspection);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order.slice(0, 3), ['spawn:5101', 'SIGTERM:5101', 'spawn:5102']);
+  second.stderr.emit('data', Buffer.from('Listening on:'));
+  await restarted;
+  await engine.stop();
+});
+
+test('failed-child cleanup stays bounded when the stopper throws or hangs', async () => {
+  for (const behavior of ['throw', 'hang']) {
+    const harness = createHarness({ autoExitOnStop: false });
+    const first = new FakeChild();
+    const second = new FakeChild();
+    first.pid = behavior === 'throw' ? 5201 : 5301;
+    second.pid = first.pid + 1;
+    useDistinctChildren(harness, [first, second], behavior);
+    const engine = new ParakeetTranscriber(harness.dependencies);
+    const initial = engine.start(harness.inspection);
+    await tick();
+    first.stderr.emit('data', Buffer.from('Listening on:'));
+    await initial;
+    first.emit('error', new Error(`${behavior} failure`));
+    const restarted = engine.start(harness.inspection);
+    await tick();
+    assert.equal(harness.spawnCalls.length, 1, behavior);
+    await harness.clock.advance(1999);
+    assert.equal(harness.spawnCalls.length, 1, behavior);
+    await harness.clock.advance(1);
+    await tick();
+    assert.deepEqual(harness.stopCalls.map((call) => call.signal), ['SIGTERM', 'SIGKILL'], behavior);
+    assert.equal(harness.stopCalls.every((call) => call.target === first), true, behavior);
+    assert.equal(harness.spawnCalls.length, 2, behavior);
+    assert.equal(first.stderr.listenerCount('data'), 0, behavior);
+    assert.equal(first.listenerCount('error'), 1, behavior);
+    assert.equal(first.listenerCount('exit'), 1, behavior);
+    second.stderr.emit('data', Buffer.from('Listening on:'));
+    await restarted;
+    first.exit(0, 'SIGKILL');
+    assert.equal(first.listenerCount('error'), 0, behavior);
+    assert.equal(first.listenerCount('exit'), 0, behavior);
+    second.exit(0, 'SIGTERM');
+    await engine.stop();
+  }
 });
 
 test('concurrent stop closes sockets, rejects all work, TERM-kills only its child, then returns on exit', async () => {
