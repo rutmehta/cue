@@ -55,8 +55,14 @@ class LocalWhisperTranscriber {
     this.acceptingAudio = true;
   }
 
-  push(channel, pcm) {
+  push(channel, pcm, requestId) {
     if (!this.acceptingAudio) return;
+    if (requestId !== undefined) {
+      if (!CHANNELS.includes(channel)) throw new Error(`Unknown local Whisper channel: ${channel}`);
+      if (typeof requestId !== 'string' || !requestId) throw new Error('A direct local Whisper request requires a non-empty request id.');
+      this._enqueue(channel, Buffer.from(pcm), requestId);
+      return;
+    }
     const segmenter = this.segmenters.get(channel);
     if (!segmenter) throw new Error(`Unknown local Whisper channel: ${channel}`);
     segmenter.push(pcm);
@@ -86,24 +92,24 @@ class LocalWhisperTranscriber {
     return this.session.stop({ force: true });
   }
 
-  _enqueue(channel, pcm) {
+  _enqueue(channel, pcm, requestId = undefined) {
     const generation = this.jobGeneration;
     const queue = this.queueState;
     queue.pendingJobs += 1;
     this.pendingJobs = queue.pendingJobs;
-    this.onStatus({ status: 'transcribing', channel, pending: queue.pendingJobs });
+    this.onStatus({ status: 'transcribing', channel, pending: queue.pendingJobs, requestId });
 
     const job = queue.tail.then(async () => {
       if (queue.abandoned || generation !== this.jobGeneration) return;
       const text = await this.session.transcribe(pcm);
       if (!queue.abandoned && generation === this.jobGeneration && text) {
-        this.onTranscript(channel, text);
+        this.onTranscript(channel, text, requestId);
       }
     });
 
     queue.tail = job
       .catch((error) => {
-        if (!queue.abandoned && generation === this.jobGeneration) this.onError(error);
+        if (!queue.abandoned && generation === this.jobGeneration) this.onError(error, channel, requestId);
       })
       .finally(() => {
         queue.pendingJobs -= 1;

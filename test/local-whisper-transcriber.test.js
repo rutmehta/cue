@@ -206,3 +206,47 @@ test('restart detaches fresh work from an abort-ignoring abandoned queue', async
   assert.deepEqual(transcripts, [{ channel: 'them', text: 'fresh transcript' }]);
   assert.equal(statuses.filter((status) => status === 'ready').length, 1);
 });
+
+test('a direct engine request preserves its id through transcript callbacks', async () => {
+  const transcripts = [];
+  let segmenterPushes = 0;
+  const transcriber = new LocalWhisperTranscriber({
+    sessionOptions: {},
+    sessionFactory: () => ({
+      async start() {},
+      async transcribe(pcm) { return pcm.toString(); },
+      abortInferences() {},
+      async stop() {}
+    }),
+    segmenterFactory: () => ({ push() { segmenterPushes += 1; }, stop() {} }),
+    onTranscript: (channel, text, requestId) => transcripts.push({ channel, text, requestId })
+  });
+
+  await transcriber.start();
+  transcriber.push('you', Buffer.from('direct'), 'request-1');
+  await transcriber.queueTail;
+
+  assert.equal(segmenterPushes, 0);
+  assert.deepEqual(transcripts, [{ channel: 'you', text: 'direct', requestId: 'request-1' }]);
+});
+
+test('a direct engine failure preserves its channel and request id', async () => {
+  const errors = [];
+  const transcriber = new LocalWhisperTranscriber({
+    sessionOptions: {},
+    sessionFactory: () => ({
+      async start() {},
+      async transcribe() { throw new Error('inference failed'); },
+      abortInferences() {},
+      async stop() {}
+    }),
+    segmenterFactory,
+    onError: (error, channel, requestId) => errors.push({ message: error.message, channel, requestId })
+  });
+
+  await transcriber.start();
+  transcriber.push('them', Buffer.from('direct'), 'request-2');
+  await transcriber.queueTail;
+
+  assert.deepEqual(errors, [{ message: 'inference failed', channel: 'them', requestId: 'request-2' }]);
+});
