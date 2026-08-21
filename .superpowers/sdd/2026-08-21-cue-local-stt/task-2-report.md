@@ -35,3 +35,12 @@
 - Deep-froze the retained normalized inspection and return fresh normalized clones. Status payloads are deep-cloned and frozen independently per observer.
 - RED verification reproduced every review finding before its fix, including the real `ws` uncaught CONNECTING error and retained OPEN TCP peer.
 - Post-review verification: 40 focused tests and 294 full-suite tests pass; syntax, diff, and natural-exit checks pass.
+
+## Review Round 2
+
+- Spawn ownership is now recorded immediately when the returned value has a positive PID, a kill method, or live-process evidence. Missing pipe/event shapes, ownership-listener failures, and readiness-listener failures all join bounded TERM/KILL disposal before start rejection or replacement spawn; known terminal children also release their ownership-only listeners.
+- No-argument `start()` now installs one generation and its deferred promise before publishing `starting` or invoking asynchronous inspection. Reentrant and concurrent callers join that exact promise through delayed inspection, inspection failure, and spawn failure, while a later retry creates exactly one fresh generation.
+- Audio duration is classified from validated view metadata before byte conversion or the absolute backing-size check. Inputs beyond 30 seconds, including 192 kHz at 30 seconds plus one sample, return `audio_too_large`; public conversion/framing and sample-rate failures return stable `invalid_audio` and `invalid_sample_rate` `LocalSttError`s.
+- Retained inspection and per-observer status clones now use own data-property definitions for every object key and array index. RED probes installed inherited Object and Array setters from status observers and confirmed that neither retained state nor another observer's snapshot can be intercepted.
+- Each review residual was reproduced with a focused RED regression before its implementation. The malformed registration case additionally verifies the exact 2,000 ms TERM-to-KILL boundary and listener release without allocating a maximum-size audio buffer.
+- Post-review verification: 50 focused tests, 304 full-suite tests, and 2 isolated real-`ws` strict subprocess tests pass and exit naturally. Source/test syntax checks and `git diff --check` pass, with no retained WebSocket TCP handles or test timers.

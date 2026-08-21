@@ -26,13 +26,19 @@ function localError(code, message, action, details = null) {
   return new LocalSttError(code, message, action, details);
 }
 
-function asByteBuffer(value, description, maximumBytes) {
+function byteViewLength(value, description) {
   if (!Buffer.isBuffer(value) && !ArrayBuffer.isView(value)) {
     throw new TypeError(`${description} must be a Buffer or typed array.`);
   }
-  if (!Number.isSafeInteger(value.byteLength) || value.byteLength > maximumBytes) {
+  if (!Number.isSafeInteger(value.byteLength) || value.byteLength < 0) {
     throw new RangeError(`${description} is too large.`);
   }
+  return value.byteLength;
+}
+
+function asByteBuffer(value, description, maximumBytes) {
+  const byteLength = byteViewLength(value, description);
+  if (byteLength > maximumBytes) throw new RangeError(`${description} is too large.`);
   return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 }
 
@@ -96,8 +102,32 @@ async function findFirstAvailablePort({ host, start, end }) {
   );
 }
 
+function childKnownExited(child) {
+  if (!child || (typeof child !== 'object' && typeof child !== 'function')) return true;
+  try {
+    if (typeof child.exitCode === 'number') return true;
+    if (typeof child.signalCode === 'string' && child.signalCode.length > 0) return true;
+  } catch {}
+  return false;
+}
+
+function mayOwnSpawnedProcess(child) {
+  if (!child || (typeof child !== 'object' && typeof child !== 'function')) return false;
+  try {
+    if (Number.isSafeInteger(child.pid) && child.pid > 0) return true;
+  } catch {}
+  try {
+    if (typeof child.kill === 'function') return true;
+  } catch {}
+  try {
+    return child.exitCode === null || child.signalCode === null;
+  } catch {
+    return false;
+  }
+}
+
 function defaultStopProcess(child, signal, options) {
-  if (!child || child.exitCode !== null) return;
+  if (!child || childKnownExited(child)) return;
   if (options.detached && process.platform !== 'win32' && Number.isSafeInteger(child.pid) && child.pid > 0) {
     try {
       process.kill(-child.pid, signal);
@@ -143,7 +173,14 @@ function errorRecord(error) {
 function deepCloneFreeze(value) {
   if (value === null || typeof value !== 'object') return value;
   const clone = Array.isArray(value) ? [] : {};
-  for (const key of Object.keys(value)) clone[key] = deepCloneFreeze(value[key]);
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(clone, key, {
+      value: deepCloneFreeze(value[key]),
+      writable: true,
+      enumerable: true,
+      configurable: true
+    });
+  }
   return Object.freeze(clone);
 }
 
@@ -260,25 +297,28 @@ class ParakeetTranscriber {
   }
 
   start(options) {
-    if (options === undefined) return this.inspect().then((inspection) => this.start(inspection));
+    if (this._state === 'starting' && this._startPromise) return this._startPromise;
 
     let inspection;
     try {
       this._validateDependencies();
-      inspection = this._normalizeHealthyInspection(options);
+      if (options === undefined) {
+        if (typeof this._inspect !== 'function') {
+          throw new TypeError('Parakeet inspection dependency must be a function.');
+        }
+      } else inspection = this._normalizeHealthyInspection(options);
     } catch (error) {
       return Promise.reject(error);
     }
 
-    if (this._state === 'starting' && this._startPromise) return this._startPromise;
     if (this._state === 'ready') return Promise.resolve(normalizeEngineInspection(this._inspection));
     if (this._state === 'stopping' && this._stopPromise) {
-      return this._stopPromise.then(() => this.start(inspection));
+      return this._stopPromise.then(() => this.start(options === undefined ? undefined : inspection));
     }
 
     const generation = ++this._generation;
     this._state = 'starting';
-    this._inspection = deepCloneFreeze(inspection);
+    this._inspection = inspection ? deepCloneFreeze(inspection) : null;
     let settleResolve;
     let settleReject;
     let settled = false;
@@ -301,6 +341,13 @@ class ParakeetTranscriber {
       if (this._failedChildCleanup) await this._failedChildCleanup;
       if (generation !== this._generation || this._state !== 'starting') {
         throw localError('engine_stopped', 'Parakeet stopped before it became ready.', 'Start Parakeet again.');
+      }
+      if (!inspection) {
+        const inspected = this._normalizeHealthyInspection(await this.inspect());
+        if (generation !== this._generation || this._state !== 'starting') {
+          throw localError('engine_stopped', 'Parakeet stopped before it became ready.', 'Start Parakeet again.');
+        }
+        this._inspection = deepCloneFreeze(inspected);
       }
       await this._performStart(this._inspection, generation);
       settleResolve(normalizeEngineInspection(this._inspection));
@@ -362,10 +409,15 @@ class ParakeetTranscriber {
         buildParakeetArgs({ modelPath: inspection.model.path, port, threads }),
         { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, cwd: this._tempDirectory, detached }
       );
+      if (mayOwnSpawnedProcess(child)) {
+        const record = this._trackOwnedChild(child, detached);
+        if (record.trackingError) throw record.trackingError;
+      }
       if (!child || typeof child.on !== 'function' || !child.stderr || typeof child.stderr.on !== 'function') {
         throw new TypeError('Spawn did not return a child process with piped stderr.');
       }
     } catch (cause) {
+      if (child && this._ownedChildren.has(child)) await this._beginFailedChildCleanup(child);
       const error = localError(
         'runtime_spawn_failed',
         'The Parakeet runtime could not be started.',
@@ -464,9 +516,25 @@ class ParakeetTranscriber {
 
       this._childListeners = { child, onError, onExit };
       this._cancelReadiness = cancelStart;
-      addListener(child.stderr, 'data', onData);
-      addListener(child, 'error', onError);
-      addListener(child, 'exit', onExit);
+      try {
+        addListener(child.stderr, 'data', onData);
+        addListener(child, 'error', onError);
+        addListener(child, 'exit', onExit);
+      } catch (cause) {
+        const error = localError(
+          'runtime_spawn_failed',
+          'Cue could not monitor the spawned Parakeet runtime.',
+          'Verify that the configured runtime is executable and compatible.',
+          { cause: String(cause && cause.message || cause) }
+        );
+        clearReadiness();
+        removeChildListeners();
+        Promise.resolve(this._beginFailedChildCleanup(child)).then(
+          () => failStart(error),
+          () => failStart(error)
+        );
+        return;
+      }
       readinessTimer = this._setTimeout(() => {
         const error = localError(
           'readiness_timeout',
@@ -492,24 +560,38 @@ class ParakeetTranscriber {
     let resolveExited;
     const exited = new Promise((resolve) => { resolveExited = resolve; });
     const record = {
-      child, detached, exited, disposal: null,
+      child, detached, exited, disposal: null, trackingError: null, finished: false,
       onError: () => {},
-      onExit: () => {
+      onExit: null,
+      finish: () => {
+        if (record.finished) return;
+        record.finished = true;
         removeListener(child, 'error', record.onError);
         removeListener(child, 'exit', record.onExit);
         this._ownedChildren.delete(child);
         resolveExited();
       }
     };
+    record.onExit = record.finish;
     this._ownedChildren.set(child, record);
-    addListener(child, 'error', record.onError);
-    addListener(child, 'exit', record.onExit);
+    try {
+      addListener(child, 'error', record.onError);
+      addListener(child, 'exit', record.onExit);
+    } catch (error) {
+      record.trackingError = error;
+      removeListener(child, 'error', record.onError);
+      removeListener(child, 'exit', record.onExit);
+    }
     return record;
   }
 
   _disposeOwnedChild(child) {
     const record = this._ownedChildren.get(child);
-    if (!record || child.exitCode !== null) return Promise.resolve();
+    if (!record) return Promise.resolve();
+    if (childKnownExited(child)) {
+      record.finish();
+      return Promise.resolve();
+    }
     if (record.disposal) return record.disposal;
     const disposal = (async () => {
       let timer = null;
@@ -522,6 +604,7 @@ class ParakeetTranscriber {
       if (timer !== null) this._clearTimeout(timer);
       if (exited) return;
       this._signalChild(child, 'SIGKILL', record.detached);
+      if (childKnownExited(child)) record.finish();
     })();
     record.disposal = Promise.resolve().then(() => {
       this._signalChild(child, 'SIGTERM', record.detached);
@@ -570,22 +653,42 @@ class ParakeetTranscriber {
       if (typeof channel !== 'string' || !channel.trim() || channel.length > 128) {
         throw new TypeError('Transcription channel must be a non-empty string.');
       }
-      validateSampleRate(options.sampleRate);
-      const pcmBytes = asByteBuffer(options.pcm16, 'PCM audio', MAX_PCM16_BYTES);
-      if (pcmBytes.byteLength === 0) throw new RangeError('PCM audio must contain audio samples.');
-      if (pcmBytes.byteLength % 2 !== 0) {
-        throw new RangeError('PCM audio must contain complete 16-bit samples.');
-      }
-      const durationMs = (pcmBytes.byteLength / 2) / options.sampleRate * 1000;
-      if (durationMs > MAX_AUDIO_DURATION_MS) {
+      try {
+        validateSampleRate(options.sampleRate);
+      } catch (cause) {
         throw localError(
-          'audio_too_large',
-          'Parakeet accepts at most 30 seconds of audio per request.',
-          'Split the audio into segments of 30 seconds or less.'
+          'invalid_sample_rate',
+          `Parakeet requires an integer sample rate from ${MIN_SAMPLE_RATE} to ${MAX_SAMPLE_RATE} Hz.`,
+          'Provide the actual integer sample rate for this PCM segment.',
+          { cause: String(cause && cause.message || cause) }
         );
       }
-      const float32 = pcm16ToFloat32Buffer(options.pcm16);
-      frame = buildOfflineMessage(float32, options.sampleRate);
+      let durationMs;
+      try {
+        const pcmByteLength = byteViewLength(options.pcm16, 'PCM audio');
+        if (pcmByteLength === 0) throw new RangeError('PCM audio must contain audio samples.');
+        if (pcmByteLength % 2 !== 0) {
+          throw new RangeError('PCM audio must contain complete 16-bit samples.');
+        }
+        durationMs = (pcmByteLength / 2) / options.sampleRate * 1000;
+        if (durationMs > MAX_AUDIO_DURATION_MS) {
+          throw localError(
+            'audio_too_large',
+            'Parakeet accepts at most 30 seconds of audio per request.',
+            'Split the audio into segments of 30 seconds or less.'
+          );
+        }
+        const float32 = pcm16ToFloat32Buffer(options.pcm16);
+        frame = buildOfflineMessage(float32, options.sampleRate);
+      } catch (cause) {
+        if (cause instanceof LocalSttError) throw cause;
+        throw localError(
+          'invalid_audio',
+          'Parakeet requires complete PCM16 audio samples in a Buffer or typed array.',
+          'Provide a non-empty, complete PCM16 segment and try again.',
+          { cause: String(cause && cause.message || cause) }
+        );
+      }
       timeoutMs = Math.max(MIN_TRANSCRIPTION_TIMEOUT_MS, durationMs * 4);
       if (this._state !== 'ready' || !this._child || !this._port) {
         throw localError('engine_not_ready', 'Parakeet is not ready to transcribe.', 'Start Parakeet and try again.');
@@ -846,7 +949,7 @@ class ParakeetTranscriber {
   }
 
   _signalChild(child, signal, detached) {
-    if (!child || child.exitCode !== null) return;
+    if (!child || childKnownExited(child)) return;
     try { consumeRejection(this._stopProcess(child, signal, { detached })); } catch {}
   }
 

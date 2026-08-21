@@ -9,6 +9,7 @@ const {
   buildOfflineMessage,
   pcm16ToFloat32Buffer
 } = require('../src/parakeet-transcriber');
+const { LocalSttError } = require('../src/local-stt-engine');
 
 function createClock() {
   let now = 0;
@@ -102,6 +103,16 @@ class FakeSocket extends EventEmitter {
 async function tick() {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((settleResolve, settleReject) => {
+    resolve = settleResolve;
+    reject = settleReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function createHarness(overrides = {}) {
@@ -424,6 +435,96 @@ test('publishes a stable start promise before a reentrant status observer can st
   await engine.stop();
 });
 
+test('no-argument start publishes one generation before delayed inspection and reentrant observers join it', async () => {
+  const harness = createHarness();
+  const inspection = deferred();
+  let inspectCalls = 0;
+  harness.dependencies.inspect = () => {
+    inspectCalls += 1;
+    return inspection.promise;
+  };
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  let reentrant;
+  engine.onStatus((status) => {
+    if (status.status === 'starting' && !reentrant) reentrant = engine.start();
+  });
+
+  const original = engine.start();
+  const concurrent = engine.start();
+  assert.strictEqual(reentrant, original);
+  assert.strictEqual(concurrent, original);
+  await tick();
+  assert.equal(inspectCalls, 1);
+  assert.equal(harness.spawnCalls.length, 0);
+
+  inspection.resolve(harness.inspection);
+  await tick();
+  assert.equal(harness.spawnCalls.length, 1);
+  harness.child.stderr.emit('data', Buffer.from('Listening on:'));
+  await Promise.all([original, concurrent, reentrant]);
+  await engine.stop();
+});
+
+test('no-argument inspection failure settles every joiner and one later retry creates one generation', async () => {
+  const harness = createHarness();
+  const firstInspection = deferred();
+  const secondInspection = deferred();
+  let inspectCalls = 0;
+  harness.dependencies.inspect = () => {
+    inspectCalls += 1;
+    return inspectCalls === 1 ? firstInspection.promise : secondInspection.promise;
+  };
+  const engine = new ParakeetTranscriber(harness.dependencies);
+
+  const first = engine.start();
+  const joined = engine.start();
+  assert.strictEqual(joined, first);
+  const rejected = assert.rejects(first, /inspection unavailable/);
+  await tick();
+  firstInspection.reject(new Error('inspection unavailable'));
+  await rejected;
+  assert.equal(inspectCalls, 1);
+
+  const retry = engine.start();
+  const retryJoiner = engine.start();
+  assert.notStrictEqual(retry, first);
+  assert.strictEqual(retryJoiner, retry);
+  await tick();
+  assert.equal(inspectCalls, 2);
+  secondInspection.resolve(harness.inspection);
+  await tick();
+  harness.child.stderr.emit('data', Buffer.from('Listening on:'));
+  await retry;
+  assert.equal(harness.spawnCalls.length, 1);
+  await engine.stop();
+});
+
+test('no-argument spawn failure settles one generation and a coalesced retry spawns once', async () => {
+  const harness = createHarness();
+  const replacement = new FakeChild();
+  replacement.pid = 5302;
+  let spawnAttempts = 0;
+  harness.dependencies.spawn = (...args) => {
+    harness.spawnCalls.push(args);
+    spawnAttempts += 1;
+    if (spawnAttempts === 1) throw new Error('spawn unavailable');
+    return replacement;
+  };
+  const engine = new ParakeetTranscriber(harness.dependencies);
+
+  const failed = engine.start();
+  assert.strictEqual(engine.start(), failed);
+  await expectCode(failed, 'runtime_spawn_failed');
+  const retry = engine.start();
+  assert.strictEqual(engine.start(), retry);
+  assert.notStrictEqual(retry, failed);
+  await new Promise((resolve) => setImmediate(resolve));
+  replacement.stderr.emit('data', Buffer.from('Listening on:'));
+  await retry;
+  assert.equal(harness.spawnCalls.length, 2);
+  await engine.stop();
+});
+
 test('detects readiness even when a long stderr chunk follows the marker', async () => {
   const harness = createHarness();
   const engine = new ParakeetTranscriber(harness.dependencies);
@@ -495,6 +596,129 @@ test('deep-clones and freezes status payloads separately for each observer', asy
   await engine.stop();
 });
 
+test('retained inspection cloning bypasses inherited object setters', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'runtime');
+  let setterCalls = 0;
+  let started;
+  try {
+    Object.defineProperty(Object.prototype, 'runtime', {
+      configurable: true,
+      set(value) {
+        setterCalls += 1;
+        Object.defineProperty(this, 'runtime', {
+          value, writable: true, enumerable: true, configurable: true
+        });
+      }
+    });
+    started = engine.start(harness.inspection);
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'runtime', previous);
+    else delete Object.prototype.runtime;
+  }
+  await tick();
+  harness.child.stderr.emit('data', Buffer.from('Listening on:'));
+  const inspection = await started;
+  assert.equal(setterCalls, 0);
+  assert.equal(inspection.runtime.path, harness.inspection.runtime.path);
+  await engine.stop();
+});
+
+test('an observer-installed object setter cannot intercept another observer snapshot', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'message');
+  let setterCalls = 0;
+  let secondSnapshot;
+  let installed = false;
+  const restore = () => {
+    if (!installed) return;
+    installed = false;
+    if (previous) Object.defineProperty(Object.prototype, 'message', previous);
+    else delete Object.prototype.message;
+  };
+  engine.onStatus((status) => {
+    if (status.status !== 'starting' || installed) return;
+    installed = true;
+    Object.defineProperty(Object.prototype, 'message', {
+      configurable: true,
+      set(value) {
+        setterCalls += 1;
+        Object.defineProperty(this, 'message', {
+          value, writable: true, enumerable: true, configurable: true
+        });
+      }
+    });
+  });
+  engine.onStatus((status) => {
+    if (status.status === 'starting') secondSnapshot = status;
+  });
+  let started;
+  try {
+    started = engine.start(harness.inspection);
+  } finally {
+    restore();
+  }
+  await tick();
+  harness.child.stderr.emit('data', Buffer.from('Listening on:'));
+  await started;
+  assert.equal(setterCalls, 0);
+  assert.equal(Object.hasOwn(secondSnapshot, 'message'), true);
+  assert.equal(secondSnapshot.message, 'Starting local Parakeet.');
+  await engine.stop();
+});
+
+test('observer-installed array setters cannot intercept nested error snapshots', async () => {
+  const harness = createHarness();
+  const marker = 'array-setter-probe-6006';
+  harness.dependencies.findPort = async () => {
+    throw new LocalSttError(
+      'port_unavailable',
+      'No port is available.',
+      'Close the conflicting process.',
+      { attempts: [marker] }
+    );
+  };
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  const previous = Object.getOwnPropertyDescriptor(Array.prototype, '0');
+  let setterCalls = 0;
+  let errorSnapshot;
+  let installed = false;
+  const restore = () => {
+    if (!installed) return;
+    installed = false;
+    if (previous) Object.defineProperty(Array.prototype, '0', previous);
+    else delete Array.prototype[0];
+  };
+  engine.onStatus((status) => {
+    if (status.status === 'starting' && !installed) {
+      installed = true;
+      Object.defineProperty(Array.prototype, '0', {
+        configurable: true,
+        set(value) {
+          if (value === marker) setterCalls += 1;
+          Object.defineProperty(this, '0', {
+            value, writable: true, enumerable: true, configurable: true
+          });
+        }
+      });
+    } else if (status.status === 'error') {
+      errorSnapshot = status;
+      restore();
+    }
+  });
+  try {
+    await expectCode(engine.start(harness.inspection), 'port_unavailable');
+  } finally {
+    restore();
+  }
+  assert.equal(setterCalls, 0);
+  assert.equal(Object.hasOwn(errorSnapshot.error.details.attempts, 0), true);
+  assert.equal(errorSnapshot.error.details.attempts[0], marker);
+  await engine.stop();
+});
+
 test('consumes rejected thenables returned by status observers', async () => {
   const harness = createHarness();
   const engine = new ParakeetTranscriber(harness.dependencies);
@@ -550,6 +774,87 @@ test('a pre-readiness child error disposes that exact child before restart spawn
   assert.deepEqual(order.slice(0, 3), ['spawn:5001', 'SIGTERM:5001', 'spawn:5002']);
   second.stderr.emit('data', Buffer.from('Listening on:'));
   await restarted;
+  await engine.stop();
+});
+
+test('a live malformed spawned child is owned and disposed before start rejects or restart spawns', async () => {
+  const harness = createHarness();
+  const malformed = new FakeChild();
+  const replacement = new FakeChild();
+  malformed.pid = 5101;
+  malformed.stderr = null;
+  replacement.pid = 5102;
+  const order = useDistinctChildren(harness, [malformed, replacement]);
+  const engine = new ParakeetTranscriber(harness.dependencies);
+
+  const failed = engine.start(harness.inspection);
+  await tick();
+  await expectCode(failed, 'runtime_spawn_failed');
+  assert.deepEqual(order.slice(0, 2), ['spawn:5101', 'SIGTERM:5101']);
+  assert.equal(malformed.listenerCount('error'), 0);
+  assert.equal(malformed.listenerCount('exit'), 0);
+
+  const restarted = engine.start(harness.inspection);
+  await tick();
+  assert.deepEqual(order.slice(0, 3), ['spawn:5101', 'SIGTERM:5101', 'spawn:5102']);
+  replacement.stderr.emit('data', Buffer.from('Listening on:'));
+  await restarted;
+  await engine.stop();
+});
+
+test('listener-registration failure still bounds and kills the exact live spawn before restart', async () => {
+  const harness = createHarness();
+  class RegistrationThrowChild extends FakeChild {
+    constructor() {
+      super();
+      this.registrations = 0;
+    }
+
+    on(event, listener) {
+      this.registrations += 1;
+      if (this.registrations > 2) throw new Error('listener registration failed');
+      return super.on(event, listener);
+    }
+  }
+  const malformed = new RegistrationThrowChild();
+  malformed.pid = 5201;
+  malformed.kill = () => {};
+  const replacement = new FakeChild();
+  replacement.pid = 5202;
+  const signals = [];
+  harness.dependencies.spawn = (...args) => {
+    harness.spawnCalls.push(args);
+    return harness.spawnCalls.length === 1 ? malformed : replacement;
+  };
+  harness.dependencies.stopProcess = (child, signal) => {
+    signals.push(`${signal}:${child.pid}`);
+    if (child === malformed && signal === 'SIGKILL') {
+      child.exitCode = 137;
+      child.signalCode = signal;
+    }
+    if (child === replacement && signal === 'SIGTERM') child.exit(0, signal);
+  };
+  const engine = new ParakeetTranscriber(harness.dependencies);
+
+  const failed = engine.start(harness.inspection);
+  let settled = false;
+  failed.catch(() => { settled = true; });
+  await tick();
+  assert.deepEqual(signals, ['SIGTERM:5201']);
+  assert.equal(settled, false);
+  await harness.clock.advance(1999);
+  assert.equal(settled, false);
+  await harness.clock.advance(1);
+  await expectCode(failed, 'runtime_spawn_failed');
+  assert.deepEqual(signals, ['SIGTERM:5201', 'SIGKILL:5201']);
+  assert.equal(malformed.listenerCount('error'), 0);
+  assert.equal(malformed.listenerCount('exit'), 0);
+
+  const restarted = engine.start(harness.inspection);
+  await tick();
+  replacement.stderr.emit('data', Buffer.from('Listening on:'));
+  await restarted;
+  assert.equal(harness.spawnCalls.length, 2);
   await engine.stop();
 });
 
@@ -755,6 +1060,51 @@ test('accepts at most 30 seconds of audio and rejects longer input before openin
   await tick();
   assert.equal(harness.sockets.length, 0);
   await rejected;
+  await engine.stop();
+});
+
+test('classifies 192 kHz audio beyond 30 seconds before byte conversion without a large allocation', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  await startReady(engine, harness);
+  const simulatedView = {
+    buffer: new ArrayBuffer(0),
+    byteOffset: 0,
+    byteLength: (192000 * 30 + 1) * 2
+  };
+  const descriptor = Object.getOwnPropertyDescriptor(ArrayBuffer, 'isView');
+  let request;
+  try {
+    Object.defineProperty(ArrayBuffer, 'isView', {
+      ...descriptor,
+      value: (value) => value === simulatedView || descriptor.value(value)
+    });
+    request = engine.transcribe({ channel: 'mic', pcm16: simulatedView, sampleRate: 192000 });
+  } finally {
+    Object.defineProperty(ArrayBuffer, 'isView', descriptor);
+  }
+  await expectCode(request, 'audio_too_large');
+  assert.equal(harness.sockets.length, 0);
+  await engine.stop();
+});
+
+test('maps public PCM conversion and sample metadata failures to stable local errors', async () => {
+  const harness = createHarness();
+  const engine = new ParakeetTranscriber(harness.dependencies);
+  await startReady(engine, harness);
+  for (const pcm16 of [Buffer.alloc(0), Buffer.alloc(3), 'not audio']) {
+    await expectCode(
+      engine.transcribe({ channel: 'mic', pcm16, sampleRate: 16000 }),
+      'invalid_audio'
+    );
+  }
+  for (const sampleRate of [7999, 192001, 16000.5]) {
+    await expectCode(
+      engine.transcribe({ channel: 'mic', pcm16: Buffer.alloc(2), sampleRate }),
+      'invalid_sample_rate'
+    );
+  }
+  assert.equal(harness.sockets.length, 0);
   await engine.stop();
 });
 
