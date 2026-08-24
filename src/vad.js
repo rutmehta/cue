@@ -34,6 +34,7 @@ class AdaptiveVAD {
     // Callbacks
     this.onSpeechStart = options.onSpeechStart || (() => {});
     this.onSpeechEnd = options.onSpeechEnd || (() => {});
+    this.onSpeechAbort = options.onSpeechAbort || (() => {});
     this.onVADState = options.onVADState || (() => {});
   }
 
@@ -108,6 +109,8 @@ class AdaptiveVAD {
             const wasSpeech = this.speechFrameCount >= this.minSpeechFrames;
             if (wasSpeech) {
               this.onSpeechEnd(this.speechFrameCount * this.frameDurationMs);
+            } else {
+              this.onSpeechAbort(this.speechFrameCount * this.frameDurationMs);
             }
             this.state = 'silence';
             this.speechFrameCount = 0;

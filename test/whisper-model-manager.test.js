@@ -153,3 +153,58 @@ test('reports a missing selected model distinctly from a corrupt model', async (
     (error) => error.code === 'ENOENT'
   );
 });
+
+test('verified model status rejects a same-size corrupt artifact', async (context) => {
+  const content = Buffer.from('expected model bytes');
+  const model = createFixtureModel(content);
+  const manager = new WhisperModelManager({
+    userDataPath: createTestDirectory(context),
+    models: [model],
+    fetchImpl: async () => { throw new Error('not used'); }
+  });
+  fs.mkdirSync(manager.modelDirectory, { recursive: true });
+  fs.writeFileSync(manager.getModelPath(model.id), Buffer.from('corrupted model data'));
+
+  await assert.rejects(
+    manager.verifyInstalledModel(model.id),
+    (error) => error.code === 'MODEL_CHECKSUM_MISMATCH'
+  );
+  assert.deepEqual(
+    (await manager.listModels({ verify: true }))[0],
+    { ...model, installed: false, status: 'corrupt', installedBytes: model.bytes, partialBytes: 0, downloading: false }
+  );
+});
+
+test('verified model status caches a successful hash until file metadata changes', async (context) => {
+  const content = Buffer.from('verified cached model');
+  const model = createFixtureModel(content);
+  const manager = new WhisperModelManager({
+    userDataPath: createTestDirectory(context),
+    models: [model],
+    fetchImpl: async () => { throw new Error('not used'); }
+  });
+  fs.mkdirSync(manager.modelDirectory, { recursive: true });
+  const modelPath = manager.getModelPath(model.id);
+  fs.writeFileSync(modelPath, content);
+  const originalSha = manager._sha256.bind(manager);
+  let hashes = 0;
+  manager._sha256 = async (...args) => {
+    hashes += 1;
+    return originalSha(...args);
+  };
+
+  assert.equal(await manager.verifyInstalledModel(model.id), modelPath);
+  assert.equal(await manager.verifyInstalledModel(model.id), modelPath);
+  assert.equal(hashes, 1);
+  assert.equal((await manager.listModels({ verify: true }))[0].status, 'ready');
+  assert.equal(hashes, 1);
+
+  fs.writeFileSync(modelPath, Buffer.from('tampered cached model'));
+  const future = new Date(Date.now() + 2000);
+  fs.utimesSync(modelPath, future, future);
+  await assert.rejects(
+    manager.verifyInstalledModel(model.id),
+    (error) => error.code === 'MODEL_CHECKSUM_MISMATCH'
+  );
+  assert.equal(hashes, 2);
+});
