@@ -850,3 +850,61 @@ button:focus { outline: none; }
 .cs-title { font-size: 15px; font-weight: 620; color: var(--tx-1); line-height: 1.35; }
 .cs-body { margin-top: 10px; color: var(--tx-mut); font-size: 12.5px; line-height: 1.5; white-space: pre-line; }
 .cs-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }
+
+/* ============================ Broadcast overlay refresh ============================ */
+:root {
+  --accent: #e45d4f;
+  --live: #5e9c76;
+  --tx-1: #f5f2ea;
+  --tx-2: #dedbd4;
+  --tx-mut: #a9adb4;
+  --bd-hair: rgba(245,242,234,.16);
+  --r-panel: 14px;
+}
+#app { padding-top: 10px; }
+#toolbar {
+  width: min(680px, 96vw); min-height: 44px; padding: 5px 7px 5px 10px;
+  border-radius: 12px; gap: 6px; background: rgba(23,24,26,.97);
+  border-color: rgba(245,242,234,.18); box-shadow: 0 8px 28px rgba(0,0,0,.52);
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.drag-pill { flex: 1; justify-content: flex-start; min-height: 32px; background: transparent; color: var(--tx-mut); }
+.drag-pill:hover { background: rgba(255,255,255,.05); }
+.drag-label { color: var(--tx-mut); text-transform: uppercase; font-size: 10px; letter-spacing: .11em; }
+.tb-logo { display: none !important; }
+#toolbar button { min-height: 32px; border-radius: 8px; font: 650 12px/1 var(--font); gap: 6px; padding: 0 11px; }
+.tb-hide { color: var(--tx-2) !important; }
+.tb-stop { width: auto; min-width: 82px; background: #f5f2ea !important; color: #17181a !important; }
+.tb-stop.active { background: #e45d4f !important; color: #fff !important; }
+.tb-stop.paused { background: #d7a84a !important; color: #17181a !important; }
+.tb-end { color: #f2b0a8 !important; border: 1px solid rgba(228,93,79,.38) !important; }
+.tb-quit { width: auto; color: var(--tx-mut) !important; }
+.tb-quit:hover { color: #fff !important; background: #9f3f36 !important; }
+button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid #f5f2ea; outline-offset: 2px; }
+#panel-wrap { width: min(680px, 96vw); margin-top: 8px; }
+#signal-strip {
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px;
+  background: rgba(23,24,26,.98); border: 1px solid rgba(245,242,234,.16); border-bottom: 0;
+  border-radius: 12px 12px 0 0; color: var(--tx-mut); font-size: 10px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase;
+}
+.signal-primary { display: flex; align-items: center; gap: 7px; min-width: 145px; color: var(--tx-1); }
+#signal-dot { width: 8px; height: 8px; border-radius: 50%; background: #62656b; }
+#signal-strip[data-state="listening"] #signal-dot, #signal-strip[data-state="starting"] #signal-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(228,93,79,.18); }
+#signal-strip[data-state="paused"] #signal-dot { background: #d7a84a; }
+.signal-source, .signal-engine { border-left: 1px solid rgba(245,242,234,.13); padding-left: 9px; white-space: nowrap; }
+.signal-source strong { color: #70747a; }
+.signal-source[data-state="live"] strong { color: #7ec397; }
+.signal-source[data-state="error"] strong { color: #f07d70; }
+.signal-engine { margin-left: auto; color: #d4d0c8; }
+#live-dot, #stt-status { display: none !important; }
+.glass { background: rgba(23,24,26,.96); border-color: rgba(245,242,234,.16); box-shadow: 0 18px 46px rgba(0,0,0,.52); backdrop-filter: none; -webkit-backdrop-filter: none; }
+#panel { padding: 21px 24px 18px; border-radius: 0 0 14px 14px; }
+#messages { max-height: 54vh; }
+.ai-text { color: #f5f2ea; font-size: 23px; line-height: 1.48; font-weight: 450; letter-spacing: -.012em; }
+.ai-text.small { font-size: 18px; }
+.user-bubble { background: #313339; box-shadow: none; border: 1px solid rgba(245,242,234,.12); }
+#composer { background: #24262a; border-color: rgba(245,242,234,.15); }
+.interim-transcript { background: rgba(94,156,118,.11); border-color: rgba(94,156,118,.35); color: #d6e7dc; font-style: normal; }
+.s-seg button.on { background: #f5f2ea; color: #17181a; }
+@media (max-width: 560px) { .signal-engine { display: none; } .signal-primary { min-width: 125px; } .drag-label { display: none; } }

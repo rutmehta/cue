@@ -10,7 +10,7 @@
   <div id="app">
     <!-- Dedicated drag handle / top bar -->
     <div id="toolbar" class="drag-handle">
-      <div class="drag-pill" title="Drag to move window">
+      <div class="drag-pill" title="Drag anywhere on this bar to move Cue">
         <span class="drag-dots" aria-hidden="true"></span>
         <span class="drag-label">Drag</span>
       </div>
@@ -18,15 +18,22 @@
       <div class="tb-divider"></div>
       <button class="tb-hide" id="hide-btn" aria-label="Hide Cue"><span class="chev"></span><span>Hide</span></button>
       <div class="tb-divider"></div>
-      <button class="tb-stop" id="stop-btn" title="Start listening" aria-label="Start listening"></button>
+      <button class="tb-stop" id="stop-btn" title="Start listening" aria-label="Start listening"><span id="session-action-label">Start</span></button>
+      <button class="tb-end hidden" id="end-btn" title="End session" aria-label="End session">End</button>
       <div class="tb-divider"></div>
-      <button class="tb-quit" id="quit-btn" title="Quit Cue (⌘⇧X)" aria-label="Quit Cue"></button>
+      <button class="tb-quit" id="quit-btn" title="Quit Cue (⌘⇧X)" aria-label="Quit Cue">Quit</button>
     </div>
 
     <!-- Main assistant panel -->
     <div id="panel-wrap">
       <span id="live-dot" class="off"></span>
       <div id="stt-status" class="stt-status stt-disconnected" title="STT connection status">off</div>
+      <div id="signal-strip" aria-live="polite">
+        <div class="signal-primary"><span id="signal-dot"></span><span id="session-status-label">Not listening</span></div>
+        <div class="signal-source" id="mic-signal">MIC <strong>OFF</strong></div>
+        <div class="signal-source" id="system-signal">MEETING <strong>OFF</strong></div>
+        <div class="signal-engine" id="engine-signal">LOCAL · AUTO</div>
+      </div>
       <div id="panel" class="glass no-drag">
 
         <!-- Two-column layout: responses (left) + live transcript sidebar (right) -->
@@ -174,6 +181,13 @@
           <button data-stt-provider="gemini">Gemini</button>
         </div>
         <div class="s-note">Local mode keeps microphone and meeting audio on this computer. It never silently falls back to a cloud transcription provider.</div>
+
+        <label class="s-label">Local engine <span class="s-hint">Auto picks the fastest healthy installed engine</span></label>
+        <div class="s-seg" id="local-engine-seg">
+          <button data-local-engine="auto">Auto · fastest</button>
+          <button data-local-engine="parakeet">Parakeet</button>
+          <button data-local-engine="whisper">Whisper</button>
+        </div>
 
         <div class="whisper-card">
           <div class="whisper-runtime-row">

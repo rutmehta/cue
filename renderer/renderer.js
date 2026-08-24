@@ -9,8 +9,8 @@
   // ---- paint icons -------------------------------------------------------
   $('#logo-btn').innerHTML = icon('logo', { size: 18 });
   $('.tb-hide .chev').innerHTML = icon('chevron-down', { size: 14 });
-  $('#stop-btn').innerHTML = icon('stop-square', { size: 15 });
-  $('#quit-btn').innerHTML = icon('x', { size: 14 });
+  $('#stop-btn').innerHTML = `${icon('mic', { size: 15 })}<span id="session-action-label">Start</span>`;
+  $('#quit-btn').innerHTML = `${icon('x', { size: 14 })}<span>Quit</span>`;
   document.querySelector('.act[data-mode="assist"] .ic').innerHTML = icon('sparkles', { size: 16 });
   document.querySelector('.act[data-mode="say"] .ic').innerHTML = icon('wand-sparkles', { size: 16 });
   document.querySelector('.act[data-mode="followup"] .ic').innerHTML = icon('message-circle', { size: 16 });
@@ -566,7 +566,7 @@
   $('#stop-btn').addEventListener('click', async () => {
     const phase = latestSessionSnapshot?.session?.phase || 'idle';
     const turningOn = phase === 'idle' || phase === 'error' || phase === 'paused';
-    const command = phase === 'paused' ? 'resume' : turningOn ? 'start' : 'end-session';
+    const command = phase === 'paused' ? 'resume' : turningOn ? 'start' : 'pause';
     try {
       await captureReconciler.command(command, (name) => cue.sessionCommand(name), {
         bootstrapSystem: turningOn
@@ -575,6 +575,10 @@
       showStatus('Listening could not be started. Check Cue permissions and try again.');
       cue.log('session command failed: ' + (error.message || String(error)));
     }
+  });
+  $('#end-btn').addEventListener('click', async () => {
+    try { await captureReconciler.command('end-session', (name) => cue.sessionCommand(name)); }
+    catch (error) { cue.log('end session failed: ' + (error.message || String(error))); }
   });
 
   // Transcript toggle removed — sidebar now auto-opens with listening
@@ -839,18 +843,26 @@
     const stopButton = $('#stop-btn');
     const labels = {
       idle: 'Start listening',
-      starting: 'Starting listening',
-      listening: 'End session',
+      starting: 'Pause listening',
+      listening: 'Pause listening',
       paused: 'Resume listening',
       stopping: 'Stopping listening',
       error: 'Retry listening'
     };
+    const shortLabels = { idle: 'Start', starting: 'Pause', listening: 'Pause', paused: 'Resume', stopping: 'Stopping…', error: 'Retry' };
+    const statusLabels = { idle: 'Not listening', starting: 'Starting audio…', listening: 'Listening live', paused: 'Paused', stopping: 'Ending session…', error: 'Audio needs attention' };
 
     stopButton.classList.toggle('active', active);
     stopButton.classList.toggle('paused', paused);
     stopButton.disabled = stopping;
     stopButton.title = labels[phase] || 'Session control';
     stopButton.setAttribute('aria-label', labels[phase] || 'Session control');
+    $('#session-action-label').textContent = shortLabels[phase] || 'Start';
+    $('#session-status-label').textContent = statusLabels[phase] || 'Not listening';
+    $('#signal-strip').dataset.state = phase;
+    const endButton = $('#end-btn');
+    endButton.classList.toggle('hidden', !(active || paused));
+    endButton.disabled = stopping;
     composer.classList.toggle('listening', active);
     const historyBtn = document.getElementById('history-btn');
     if (historyBtn) historyBtn.classList.toggle('listening', active);
@@ -867,6 +879,23 @@
     captureReconciler.reconcile(snapshot);
 
     const stt = snapshot.stt || {};
+    const sources = snapshot.sources || {};
+    function renderSource(id, source, enabled) {
+      const element = $(id);
+      const phase = source?.phase || (enabled ? 'starting' : 'off');
+      const value = phase === 'capturing' || phase === 'listening' || phase === 'active' ? 'LIVE'
+        : phase === 'error' ? 'ERROR' : phase === 'unsupported' ? 'N/A'
+          : enabled ? phase.toUpperCase() : 'OFF';
+      element.querySelector('strong').textContent = value;
+      element.dataset.state = value.toLowerCase();
+    }
+    renderSource('#mic-signal', sources.mic, active);
+    renderSource('#system-signal', sources.system, active);
+    const configuredEngine = settings.localStt?.engine || 'auto';
+    const activeEngine = stt.activeEngine || stt.engine || stt.selectedEngine || stt.route;
+    $('#engine-signal').textContent = stt.route === 'local'
+      ? `LOCAL · ${(activeEngine && activeEngine !== 'local' ? activeEngine : configuredEngine).toUpperCase()}`
+      : (stt.route || settings.sttProvider || 'STT').toUpperCase();
     if (stt.route === 'local' && active) {
       sttState = stt.phase === 'loading' ? 'loading' : 'local';
       const label = document.getElementById('stt-status');
@@ -1190,6 +1219,9 @@
     document.querySelectorAll('#stt-provider-seg button').forEach((button) => {
       button.classList.toggle('on', button.dataset.sttProvider === (settings.sttProvider || 'auto'));
     });
+    document.querySelectorAll('#local-engine-seg button').forEach((button) => {
+      button.classList.toggle('on', button.dataset.localEngine === (settings.localStt?.engine || 'auto'));
+    });
     const localWhisper = settings.localWhisper || { modelId: 'base.en', language: 'auto', threads: 0 };
     $('#whisper-language').value = localWhisper.language || 'auto';
     $('#whisper-threads').value = Number(localWhisper.threads) || 0;
@@ -1300,6 +1332,12 @@
       candidate.classList.toggle('on', candidate === button);
     });
     $('#s-status').textContent = statusText();
+  }));
+
+  document.querySelectorAll('#local-engine-seg button').forEach((button) => button.addEventListener('click', () => {
+    if (!settings.localStt) settings.localStt = {};
+    settings.localStt.engine = button.dataset.localEngine;
+    document.querySelectorAll('#local-engine-seg button').forEach((candidate) => candidate.classList.toggle('on', candidate === button));
   }));
 
   function formatBytes(bytes) {
