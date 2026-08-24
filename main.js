@@ -19,7 +19,12 @@ const { SessionController } = require('./src/session-controller');
 const { createTrayController } = require('./src/tray-menu');
 const { resolveOverlayBounds, storeBoundsForDisplay, storeOverlayBoundsState } = require('./src/window-state');
 const { isOverlaySender, parseSourceUpdatePayload } = require('./src/source-update');
-const { batchStatusForResult, createBatchAttemptGate, createLocalSttCallbackGate, createStreamingCallbackGate } = require('./src/stt-status-gate');
+const { batchStatusForResult, createBatchAttemptGate, createStreamingCallbackGate } = require('./src/stt-status-gate');
+const { LocalSttManager } = require('./src/local-stt-manager');
+const { createLocalSttRuntime } = require('./src/local-stt-runtime');
+const { ParakeetTranscriber } = require('./src/parakeet-transcriber');
+const { inspectParakeet } = require('./src/parakeet-runtime');
+const { WhisperEngine } = require('./src/whisper-engine');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -32,7 +37,6 @@ if (process.platform === 'darwin') {
 const { WhisperModelManager } = require('./src/whisper-model-manager');
 const { requireWhisperModel } = require('./src/whisper-model-catalog');
 const { locateWhisperRuntime } = require('./src/whisper-runtime');
-const { LocalWhisperTranscriber } = require('./src/local-whisper-transcriber');
 
 let win = null;
 let permWin = null;
@@ -73,11 +77,9 @@ const MIN_BYTES = Math.floor(16000 * 2 * 0.12); // ~0.12s
 const RMS_GATE = 180;
 let flushTimer = null;
 let whisperModelManager = null;
-let localWhisperTranscriber = null;
-let activeWhisperModelId = null;
+let localSttManager = null;
+let localSttRuntime = null;
 let llmRequestSequence = 0;
-const localSttCallbackGate = createLocalSttCallbackGate();
-let localSttCallbackToken = null;
 const batchAttemptGate = createBatchAttemptGate();
 const streamingCallbackGate = createStreamingCallbackGate();
 let streamingCallbackToken = null;
@@ -191,77 +193,6 @@ function publishTranscript(channel, text) {
   dispatchSession({ type: 'TRANSCRIPT_FINAL', source: sourceForChannel(channel), text: turn.text });
   send('transcript', turn);
   send('stt:final', { channel, text: turn.text });
-}
-
-async function startLocalWhisper(settings) {
-  if (!whisperModelManager) throw new Error('The local Whisper model manager is not ready.');
-  const localSettings = settings.localWhisper || {};
-  const model = requireWhisperModel(localSettings.modelId || 'base.en');
-  const runtime = getWhisperRuntime();
-  if (!runtime.available) throw new Error(runtime.message);
-  activeWhisperModelId = model.id;
-  const callbackToken = localSttCallbackGate.begin();
-  localSttCallbackToken = callbackToken;
-  publishSttStatus('loading', {
-    detail: `Loading local Whisper model ${model.id}.`,
-    patch: { activeEngine: 'whisper', model: model.id }
-  });
-  let transcriber = null;
-  try {
-    const modelPath = await whisperModelManager.verifyInstalledModel(model.id).catch((error) => {
-      if (error.code === 'ENOENT') {
-        throw new Error(`Download the ${model.id} model in Settings → Audio before listening.`);
-      }
-      throw error;
-    });
-
-    transcriber = new LocalWhisperTranscriber({
-      sessionOptions: {
-        executablePath: runtime.executablePath,
-        runtimeDirectory: runtime.runtimeDirectory,
-        modelPath,
-        language: model.englishOnly ? 'en' : (localSettings.language || 'auto'),
-        threads: Number(localSettings.threads) || 0,
-        tinydiarize: model.tinydiarize
-      },
-      onTranscript: (...args) => {
-        if (localSttCallbackGate.allowsTranscript(callbackToken)) publishTranscript(...args);
-      },
-      onSpeechState: (channel, speaking, durationMs) => {
-        if (!localSttCallbackGate.allowsStatus(callbackToken)) return;
-        send('vad:state', { channel, speaking, durationMs });
-      },
-      onStatus: (status) => {
-        if (!localSttCallbackGate.allowsStatus(callbackToken)) return;
-        send('stt:status', { provider: 'local', ...status });
-        publishSttStatus(status.status, {
-          detail: status.message,
-          patch: { activeEngine: 'whisper', model: activeWhisperModelId }
-        });
-      },
-      onError: (error) => {
-        if (!localSttCallbackGate.allowsStatus(callbackToken)) return;
-        sttDisabled = true;
-        console.log('[local-whisper] error', error && error.message);
-        send('stt:status', { provider: 'local', status: 'error' });
-        publishSttStatus('error', {
-          detail: error.message,
-          patch: { activeEngine: 'whisper', model: activeWhisperModelId }
-        });
-        send('status', { message: `Local transcription error: ${error.message}. Audio was not sent to a cloud fallback.` });
-      }
-    });
-
-    localWhisperTranscriber = transcriber;
-    await transcriber.start();
-  } catch (error) {
-    localSttCallbackGate.forceStop(callbackToken);
-    if (localSttCallbackToken === callbackToken) localSttCallbackToken = null;
-    if (localWhisperTranscriber === transcriber) localWhisperTranscriber = null;
-    activeWhisperModelId = null;
-    if (transcriber) await transcriber.forceStop().catch(() => {});
-    throw error;
-  }
 }
 
 async function getWhisperOverview() {
@@ -543,11 +474,6 @@ function stopStreamingSTT() {
 function routeAudio(channel, pcmBuffer) {
   const buf = Buffer.from(pcmBuffer);
 
-  if (localWhisperTranscriber) {
-    localWhisperTranscriber.push(channel, buf);
-    return;
-  }
-
   // Always run through VAD for speech state detection
   vad[channel].processChunk(buf);
 
@@ -576,7 +502,8 @@ async function setCapturing(active) {
     const settings = store.getSettings();
     if ((settings.sttProvider || 'auto') === 'local') {
       try {
-        await startLocalWhisper(settings);
+        if (!localSttRuntime) throw new Error('The local speech runtime is not ready.');
+        await localSttRuntime.start(settings);
         state.capturing = true;
         console.log('[cue] capture started, mode: local');
         send('capture:state', { active: true, streaming: false, mode: 'local' });
@@ -591,7 +518,7 @@ async function setCapturing(active) {
         send('stt:status', { provider: 'local', status: 'error' });
         publishSttStatus('error', {
           detail: error.message,
-          patch: { activeEngine: 'whisper', model: activeWhisperModelId }
+          patch: { activeEngine: null, model: null }
         });
         send('status', { message: `Local transcription could not start: ${error.message} No audio was sent to a cloud provider.` });
         send('capture:state', { active: false, streaming: false, mode: 'local' });
@@ -629,22 +556,16 @@ async function setCapturing(active) {
   buffers.you = []; buffers.them = [];
   vad.you.reset(); vad.them.reset();
   ringBuffers.you.clear(); ringBuffers.them.clear();
-  const stoppingLocalTranscriber = localWhisperTranscriber;
-  const stoppingCallbackToken = localSttCallbackToken;
-  localWhisperTranscriber = null;
-  localSttCallbackGate.beginGracefulStop(stoppingCallbackToken);
-  activeWhisperModelId = null;
-  send('capture:state', { active: false, streaming: false, mode: stoppingLocalTranscriber ? 'local' : 'off' });
-  if (stoppingLocalTranscriber) {
+  const stoppingLocal = Boolean(localSttRuntime?.isRunning());
+  send('capture:state', { active: false, streaming: false, mode: stoppingLocal ? 'local' : 'off' });
+  if (stoppingLocal) {
     send('stt:status', { provider: 'local', status: 'stopping' });
     try {
-      await stoppingLocalTranscriber.stop();
+      await localSttRuntime.stop();
     } catch (error) {
-      console.log('[local-whisper] stop error', error && error.message);
+      console.log('[local-stt] stop error', error && error.message);
     }
   }
-  localSttCallbackGate.finishGracefulStop(stoppingCallbackToken);
-  if (localSttCallbackToken === stoppingCallbackToken) localSttCallbackToken = null;
   return false;
 }
 
@@ -833,7 +754,8 @@ ipcMain.handle('whisper:model-cancel', (_event, modelId) => {
 });
 ipcMain.handle('whisper:model-delete', async (_event, modelId) => {
   requireWhisperModel(modelId);
-  if (activeWhisperModelId === modelId) {
+  if (localSttManager?.getStatus().activeEngine === 'whisper'
+    && (store.getSettings().localWhisper?.modelId || 'base.en') === modelId) {
     throw new Error('Stop listening before deleting the active model.');
   }
   const result = await whisperModelManager.deleteModel(modelId);
@@ -843,7 +765,8 @@ ipcMain.handle('whisper:model-delete', async (_event, modelId) => {
 ipcMain.handle('whisper:model-import', async (_event, modelId) => {
   if (!whisperModelManager) throw new Error('The local Whisper model manager is not ready.');
   requireWhisperModel(modelId);
-  if (activeWhisperModelId === modelId) {
+  if (localSttManager?.getStatus().activeEngine === 'whisper'
+    && (store.getSettings().localWhisper?.modelId || 'base.en') === modelId) {
     throw new Error('Stop listening before replacing the active model.');
   }
   const selection = await dialog.showOpenDialog(win, {
@@ -875,13 +798,26 @@ ipcMain.on(IPC_SENDS.sourceUpdate, (event, payload) => {
     console.log('[cue] rejected source lifecycle update', error.message);
   }
 });
+ipcMain.on(IPC_SENDS.sourcePcm, (event, message) => {
+  if (!sessionController || !isOverlaySender(event, win) || !state.capturing) return;
+  const source = message?.source;
+  const channel = source === 'mic' ? 'you' : source === 'system' ? 'them' : null;
+  if (!channel) return;
+  const snapshot = sessionController.getSnapshot();
+  if (!['starting', 'listening'].includes(snapshot.session.phase)) return;
+  try {
+    markSourceLive(channel);
+    if (localSttRuntime?.isRunning()) localSttRuntime.push(channel, message.payload);
+    else routeAudio(channel, message?.payload?.pcm);
+  } catch (error) {
+    dispatchSession({
+      type: 'SOURCE_UPDATED',
+      source,
+      patch: { phase: 'error', error: { code: 'invalid_audio', message: error.message } }
+    });
+  }
+});
 ipcMain.on('ask', (_e, payload) => runFeature(payload.mode, payload.text));
-ipcMain.on('mic:pcm', (_e, arrayBuffer) => {
-  if (state.capturing) { markSourceLive('you'); routeAudio('you', arrayBuffer); }
-});
-ipcMain.on('system:pcm', (_e, arrayBuffer) => {
-  if (state.capturing) { markSourceLive('them'); routeAudio('them', arrayBuffer); }
-});
 ipcMain.on('mouse:ignore', (_e, v) => { if (win) win.setIgnoreMouseEvents(!!v, { forward: true }); });
 ipcMain.on('open-pane', (_e, url) => { shell.openExternal(url).catch(() => {}); });
 ipcMain.on('app:quit', () => { void requestQuit(); });
@@ -1083,14 +1019,8 @@ function cancelActiveDownload() {
 
 async function stopLocalEngines() {
   batchAttemptGate.invalidate();
-  const stoppingCallbackToken = localSttCallbackToken;
-  localSttCallbackGate.forceStop(stoppingCallbackToken);
-  localSttCallbackToken = null;
-  const activeTranscriber = localWhisperTranscriber;
-  localWhisperTranscriber = null;
-  activeWhisperModelId = null;
   await Promise.allSettled([
-    activeTranscriber ? activeTranscriber.forceStop() : Promise.resolve(),
+    localSttRuntime?.isRunning() ? localSttRuntime.stop() : Promise.resolve(),
     stopAppLink()
   ]);
 }
@@ -1146,7 +1076,50 @@ async function launchApp() {
   appLaunched = true;
   if (isMac && app.dock) app.dock.hide();
 
-  whisperModelManager = new WhisperModelManager({ userDataPath: app.getPath('userData') });
+  const userDataPath = app.getPath('userData');
+  whisperModelManager = new WhisperModelManager({ userDataPath });
+  const parakeetTranscriber = new ParakeetTranscriber({
+    inspect: () => inspectParakeet({
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      userDataPath,
+      platform: process.platform,
+      architecture: process.arch,
+      environment: process.env
+    })
+  });
+  const parakeetEngine = {
+    id: 'parakeet',
+    inspect: (settings) => parakeetTranscriber.inspect(settings),
+    start: ({ inspection }) => parakeetTranscriber.start(inspection),
+    transcribe: (segment) => parakeetTranscriber.transcribe(segment),
+    stop: () => parakeetTranscriber.stop()
+  };
+  const whisperEngine = new WhisperEngine({
+    modelManager: whisperModelManager,
+    locateRuntime: async () => getWhisperRuntime()
+  });
+  localSttManager = new LocalSttManager({
+    engines: [parakeetEngine, whisperEngine],
+    dispatch: (event) => dispatchSession(event),
+    loadBenchmark: () => store.getSettings().localStt?.benchmark || null,
+    saveBenchmark: async (benchmark) => { store.setSettings({ localStt: { benchmark } }); },
+    onObserverError: (error, details) => recordEvent({
+      level: 'error',
+      event: 'local_stt_observer_failed',
+      code: details.kind,
+      msg: error?.message || String(error),
+      frame: 'LocalSttManager'
+    })
+  });
+  localSttRuntime = createLocalSttRuntime({
+    manager: localSttManager,
+    publishTranscript,
+    publishSpeechState: (channel, speaking, durationMs) => send('vad:state', { channel, speaking, durationMs }),
+    publishError: (error) => send('status', {
+      message: `Local transcription error: ${error.message}. Audio was not sent to a cloud fallback.`
+    })
+  });
 
   const allowMedia = (permission) => permission === 'media' || permission === 'microphone' || permission === 'audioCapture' || permission === 'display-capture' || permission === 'screen';
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(allowMedia(permission)));

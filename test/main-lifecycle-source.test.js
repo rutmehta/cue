@@ -7,6 +7,7 @@ const root = path.join(__dirname, '..');
 const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+const storeSource = fs.readFileSync(path.join(root, 'src', 'store.js'), 'utf8');
 
 function occurrences(source, pattern) {
   return (source.match(pattern) || []).length;
@@ -59,7 +60,7 @@ test('main restores and persists immutable per-display overlay bounds', () => {
 });
 
 test('preload exposes stable named session APIs and removable snapshot subscriptions', () => {
-  for (const name of ['sessionGetSnapshot', 'sessionCommand', 'windowCommand', 'settingsOpen', 'captureProtection', 'sourceUpdate']) {
+  for (const name of ['sessionGetSnapshot', 'sessionCommand', 'windowCommand', 'settingsOpen', 'captureProtection', 'sourceUpdate', 'sourcePcm']) {
     assert.match(preloadSource, new RegExp(`${name}:`));
   }
   assert.match(preloadSource, /IPC_EVENTS\.sessionSnapshot/);
@@ -68,6 +69,7 @@ test('preload exposes stable named session APIs and removable snapshot subscript
 
 test('renderer source lifecycle and main STT/settings/clear paths update the controller', () => {
   assert.match(mainSource, /IPC_SENDS\.sourceUpdate/);
+  assert.match(mainSource, /IPC_SENDS\.sourcePcm/);
   assert.match(mainSource, /type: 'STT_UPDATED'/);
   assert.match(mainSource, /type: 'SETTINGS_UPDATED'/);
   assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
@@ -75,12 +77,27 @@ test('renderer source lifecycle and main STT/settings/clear paths update the con
   assert.match(mainSource, /isOverlaySender\(event, win\)/);
   assert.match(mainSource, /parseSourceUpdatePayload\(payload\)/);
   assert.match(mainSource, /batchStatusForResult\(res\)/);
-  assert.match(mainSource, /beginGracefulStop\(/);
-  assert.match(mainSource, /finishGracefulStop\(/);
+  assert.match(mainSource, /localSttRuntime\.stop\(\)/);
+  assert.match(mainSource, /localSttRuntime\.push\(channel, message\.payload\)/);
   assert.match(mainSource, /batchAttemptGate\.beginCapture\(\)/);
   assert.match(mainSource, /batchAttemptGate\.beginAttempt\(channel\)/);
   assert.match(mainSource, /batchAttemptGate\.commit\(/);
   assert.match(mainSource, /batchAttemptGate\.invalidate\(\)/);
+});
+
+test('main routes local audio through one fastest-local manager with no legacy Whisper path', () => {
+  assert.equal(occurrences(mainSource, /new LocalSttManager\(/g), 1);
+  assert.equal(occurrences(mainSource, /createLocalSttRuntime\(/g), 1);
+  assert.match(mainSource, /new ParakeetTranscriber\(/);
+  assert.match(mainSource, /new WhisperEngine\(/);
+  assert.doesNotMatch(mainSource, /localWhisperTranscriber/);
+  assert.doesNotMatch(mainSource, /ipcMain\.on\('mic:pcm'/);
+  assert.doesNotMatch(mainSource, /ipcMain\.on\('system:pcm'/);
+});
+
+test('fresh installs default to fastest healthy local speech recognition', () => {
+  assert.match(storeSource, /sttProvider:\s*'local'/);
+  assert.match(storeSource, /localStt:\s*\{\s*engine:\s*'auto'/);
 });
 
 test('renderer consumes one authoritative snapshot stream and explicit window commands', () => {

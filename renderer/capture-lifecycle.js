@@ -195,12 +195,14 @@
       sink.gain.value = 0;
       proc.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0);
-        const output = new Int16Array(input.length);
-        for (let index = 0; index < input.length; index += 1) {
-          const sample = Math.max(-1, Math.min(1, input[index]));
-          output[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        }
-        onPcm(output.buffer);
+        const samples = new Float32Array(input);
+        let sum = 0;
+        for (const sample of samples) sum += sample * sample;
+        onPcm({
+          samples,
+          sampleRate: audioContext.sampleRate,
+          level: samples.length ? Math.sqrt(sum / samples.length) : 0
+        });
       };
       node.connect(proc);
       proc.connect(sink);

@@ -185,6 +185,7 @@ async function inspectRuntime(candidates, fs) {
   }
   try {
     await access(fs, runtime.path);
+    runtime.version = await fingerprintFiles([runtime.path], fs);
     return { runtime, error: null };
   } catch {
     return { runtime, error: runtimeExecutableError(runtime.path) };

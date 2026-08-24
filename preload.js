@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('cue', {
   settingsOpen: () => ipcRenderer.invoke(IPC_INVOKES.settingsOpen),
   captureProtection: () => ipcRenderer.invoke(IPC_INVOKES.captureProtection),
   sourceUpdate: (source, patch) => ipcRenderer.send(IPC_SENDS.sourceUpdate, { source, patch }),
+  sourcePcm: (source, payload) => ipcRenderer.send(IPC_SENDS.sourcePcm, { source, payload }),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
   whisperModels: () => ipcRenderer.invoke('whisper:models'),
@@ -24,8 +25,6 @@ contextBridge.exposeInMainWorld('cue', {
     return false;
   }),
   captureState: () => ipcRenderer.invoke('capture:state'),
-  micPcm: (arrayBuffer) => ipcRenderer.send('mic:pcm', arrayBuffer),
-  systemPcm: (arrayBuffer) => ipcRenderer.send('system:pcm', arrayBuffer),
   setIgnoreMouse: (v) => ipcRenderer.send('mouse:ignore', v),
   clearTranscript: () => ipcRenderer.invoke('transcript:clear'),
   openPane: (url) => ipcRenderer.send('open-pane', url),

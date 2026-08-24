@@ -13,7 +13,8 @@ const IPC_EVENTS = Object.freeze({
 });
 
 const IPC_SENDS = Object.freeze({
-  sourceUpdate: 'session:source-update'
+  sourceUpdate: 'session:source-update',
+  sourcePcm: 'session:source-pcm'
 });
 
 module.exports = { IPC_EVENTS, IPC_INVOKES, IPC_SENDS };

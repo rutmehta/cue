@@ -98,6 +98,7 @@ test('finds the universal OpenWhispr runtime and cached model on this path shape
   const result = await inspectParakeet(macFixtureWithOnlyOpenWhispr());
   assert.equal(result.runtime.path, '/Applications/OpenWhispr.app/Contents/Resources/bin/sherpa-onnx-ws-darwin-x64');
   assert.equal(result.runtime.source, 'openwhispr');
+  assert.match(result.runtime.version, /^[a-f0-9]{64}$/);
   assert.equal(result.model.path, '/Users/test/.cache/openwhispr/parakeet-models/parakeet-tdt-0.6b-v3');
   assert.equal(result.model.source, 'openwhispr');
   assert.equal(result.healthy, true);

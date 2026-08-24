@@ -605,40 +605,10 @@
   // ---- capture: mic + system audio (renderer side) ----------------------
   const {
     createAudioCaptureGraph,
-    createCaptureLifecycle,
     createSessionCaptureReconciler,
     describeSystemCaptureError,
     disconnectAudioGraph
   } = window.CaptureLifecycle;
-  const stopTracks = (stream) => stream && stream.getTracks().forEach((track) => track.stop());
-  function disconnectCapture(capture) {
-    if (!capture) return;
-    if (capture.graph._legacy) {
-      capture.graph.proc.onaudioprocess = null;
-      capture.graph.proc.disconnect(); capture.graph.node.disconnect(); capture.graph.sink.disconnect();
-    } else {
-      disconnectAudioGraph(capture.graph);
-    }
-    void capture.context.close();
-    stopTracks(capture.stream);
-  }
-  async function activateCapture(stream, onPcm, label) {
-    const context = new AudioContext({ sampleRate: 16000 });
-    const graph = await createAudioCaptureGraph({
-      audioContext: context,
-      mediaStream: stream,
-      WorkletNode: AudioWorkletNode,
-      onPcm,
-      onWorkletFallback: (error) => cue.log(label + ' AudioWorklet failed, using ScriptProcessor: ' + error.message)
-    });
-    if (!graph._legacy) cue.log(label + ' AudioWorklet processor attached');
-    return { stream, context, graph };
-  }
-  function sourceError(error) {
-    const code = String(error.code || error.name || 'capture_failed').trim().slice(0, 64) || 'capture_failed';
-    const message = String(error.message || error).trim().slice(0, 500) || 'Capture failed.';
-    return { code, message };
-  }
   function showMicError(error) {
     const name = error && error.name;
     cue.log('mic error: ' + name + ' — ' + (error.message || String(error)));
@@ -654,62 +624,30 @@
       showStatus('Microphone capture could not be started. Check your mic permissions and try again.');
     }
   }
-  const micCapture = createCaptureLifecycle({
-    acquire: async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation: true, noiseSuppression: true, autoGainControl: true,
-        channelCount: 1, sampleRate: 16000
-      } });
-      const [track] = stream.getAudioTracks();
-      if (!track) {
-        const error = new Error('No microphone audio track was available.');
-        error.code = 'no_audio_track';
-        stopTracks(stream);
-        throw error;
-      }
-      cue.log('mic stream started: track=' + (track.label || '(no label)') + ' muted=' + track.muted);
-      return stream;
+  const audioCapture = window.CueAudioCapture.createAudioCapture({
+    mediaDevices: navigator.mediaDevices,
+    MediaStream,
+    createAudioContext: () => new AudioContext(),
+    createGraph: ({ audioContext, mediaStream, onPcm }) => createAudioCaptureGraph({
+      audioContext,
+      mediaStream,
+      WorkletNode: AudioWorkletNode,
+      onPcm,
+      onWorkletFallback: (error) => cue.log('AudioWorklet failed, using ScriptProcessor: ' + error.message)
+    }),
+    disconnectGraph: (graph) => {
+      if (graph._legacy) {
+        graph.proc.onaudioprocess = null;
+        graph.proc.disconnect(); graph.node.disconnect(); graph.sink.disconnect();
+      } else disconnectAudioGraph(graph);
     },
-    activate: (stream) => activateCapture(stream, (pcm) => cue.micPcm(pcm), 'mic'),
-    disposeAcquired: stopTracks,
-    disposeActive: disconnectCapture,
-    onPhase: (phase, error) => cue.sourceUpdate('mic', { phase, error: error ? sourceError(error) : null })
+    sourceUpdate: (source, patch) => cue.sourceUpdate(source, patch),
+    sourcePcm: (source, payload) => cue.sourcePcm(source, payload)
   });
-  function startMic() { return micCapture.start().catch((error) => { showMicError(error); return null; }); }
-  function stopMic() { micCapture.stop(); }
-
-  const systemCapture = createCaptureLifecycle({
-    acquire: async () => {
-      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
-        const error = new Error('Meeting audio capture is not available on this device build.');
-        error.code = 'unsupported';
-        throw error;
-      }
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      stream.getVideoTracks().forEach((track) => track.stop());
-      const tracks = stream.getAudioTracks();
-      if (!tracks.length) {
-        stopTracks(stream);
-        const error = new Error('No system-audio loopback track was provided.');
-        error.code = 'unsupported';
-        throw error;
-      }
-      return { stream, audioStream: new MediaStream(tracks) };
-    },
-    activate: async ({ stream, audioStream }) => {
-      const capture = await activateCapture(audioStream, (pcm) => cue.systemPcm(pcm), 'system audio');
-      capture.stream = stream;
-      return capture;
-    },
-    disposeAcquired: (resource) => stopTracks(resource && resource.stream),
-    disposeActive: disconnectCapture,
-    onPhase: (phase, error) => cue.sourceUpdate('system', {
-      phase: error && error.code === 'unsupported' ? 'unsupported' : phase,
-      error: error ? sourceError(error) : null
-    })
-  });
-  function startSystemAudio() { return systemCapture.start(); }
-  function stopSystemAudio() { systemCapture.stop(); }
+  function startMic() { return audioCapture.startMic().catch((error) => { showMicError(error); return null; }); }
+  function stopMic() { audioCapture.stopMic(); }
+  function startSystemAudio() { return audioCapture.startSystem(); }
+  function stopSystemAudio() { audioCapture.stopSystem(); }
   const captureReconciler = createSessionCaptureReconciler({
     startMic,
     startSystem: startSystemAudio,

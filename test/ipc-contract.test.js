@@ -14,7 +14,10 @@ test('IPC contract has stable invoke and event namespaces for session state', ()
     captureProtection: 'capture:protection'
   });
   assert.deepEqual(IPC_EVENTS, { sessionSnapshot: 'session:snapshot' });
-  assert.deepEqual(IPC_SENDS, { sourceUpdate: 'session:source-update' });
+  assert.deepEqual(IPC_SENDS, {
+    sourceUpdate: 'session:source-update',
+    sourcePcm: 'session:source-pcm'
+  });
 });
 
 test('IPC namespaces are immutable', () => {
