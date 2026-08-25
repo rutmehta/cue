@@ -550,6 +550,8 @@ button:focus { outline: none; }
 .s-caller button:hover { background: rgba(255,255,255,0.08); color: var(--tx-2); }
 .s-caller-empty { color: var(--tx-mut); font-size: 11px; }
 .s-status { color: var(--tx-mut); font-size: 11.5px; margin-top: 6px; min-height: 16px; line-height: 1.4; }
+.shortcut-grid { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--bd-hair); border-radius: 9px; color: var(--tx-mut); font-size: 12px; }
+.shortcut-grid kbd { color: var(--tx-1); background: #2d2f34; border: 1px solid rgba(245,242,234,.16); border-bottom-color: rgba(245,242,234,.28); border-radius: 5px; padding: 3px 7px; font: 600 11px/1.2 var(--mono); white-space: nowrap; }
 
 /* AI rules textarea + counter + hint block */
 #ai-rules { min-height: 180px; line-height: 1.5; }

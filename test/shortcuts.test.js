@@ -4,6 +4,11 @@ const { DEFAULTS, resolveShortcuts, findConflicts, isValid } = require('../src/s
 
 test('defaults cover the core actions', () => {
   assert.strictEqual(DEFAULTS.assist, 'CommandOrControl+Return');
+  assert.strictEqual(DEFAULTS.toggle, 'CommandOrControl+\\');
+  assert.strictEqual(DEFAULTS.moveLeft, 'CommandOrControl+Left');
+  assert.strictEqual(DEFAULTS.moveRight, 'CommandOrControl+Right');
+  assert.strictEqual(DEFAULTS.clear, 'CommandOrControl+R');
+  assert.strictEqual(DEFAULTS.listening, 'CommandOrControl+Shift+L');
   assert.ok(DEFAULTS.leetcode);
   assert.ok(DEFAULTS.quit);
 });

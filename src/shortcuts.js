@@ -3,12 +3,14 @@
 
 const DEFAULTS = {
   assist: 'CommandOrControl+Return',
+  say: 'CommandOrControl+Shift+Return',
   leetcode: 'CommandOrControl+H',
-  quit: 'CommandOrControl+Shift+X',
-  hide: 'CommandOrControl+Shift+/',
+  toggle: 'CommandOrControl+\\',
+  moveLeft: 'CommandOrControl+Left',
+  moveRight: 'CommandOrControl+Right',
+  clear: 'CommandOrControl+R',
   listening: 'CommandOrControl+Shift+L',
-  passthrough: 'CommandOrControl+Shift+I',
-  screen: 'CommandOrControl+Shift+S'
+  quit: 'CommandOrControl+Shift+X',
 };
 
 // Every action that maps to a shortcut. Values = defaults; can be overridden via settings.

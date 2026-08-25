@@ -51,14 +51,14 @@ test('tray controller routes all menu callbacks and double-click through command
     Menu: { buildFromTemplate: (template) => template },
     icon: 'cue-icon',
     title: 'Cue',
-    tooltip: 'Cue — show/hide with ⌘⇧/',
+    tooltip: 'Cue — show/hide with ⌘\\',
     command: async (name) => commands.push(name),
     getSnapshot: () => ({ session: { phase: 'listening' } })
   });
 
   assert.equal(created, 1);
   assert.equal(title, 'Cue');
-  assert.equal(tooltip, 'Cue — show/hide with ⌘⇧/');
+  assert.equal(tooltip, 'Cue — show/hide with ⌘\\');
   assert.equal(menus.length, 1);
   for (const item of menus[0]) await item.click();
   await handlers['double-click']();
