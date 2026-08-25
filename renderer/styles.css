@@ -908,3 +908,41 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .interim-transcript { background: rgba(94,156,118,.11); border-color: rgba(94,156,118,.35); color: #d6e7dc; font-style: normal; }
 .s-seg button.on { background: #f5f2ea; color: #17181a; }
 @media (max-width: 560px) { .signal-engine { display: none; } .signal-primary { min-width: 125px; } .drag-label { display: none; } }
+
+/* The native BrowserWindow is resizable. Keep every surface inside its actual
+   viewport rather than relying on the default 720x600 window. */
+#panel {
+  max-height: calc(100vh - 98px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+#settings-scrim, #onboard-scrim, #consent-scrim { padding: 12px; }
+#settings, #onboard, #consent { max-height: calc(100vh - 24px); min-height: 0; }
+#onboard, #consent { overflow-y: auto; }
+.transcript-sidebar {
+  top: 70px;
+  right: 10px;
+  bottom: 10px;
+  width: min(300px, calc(100vw - 20px));
+  min-height: 0;
+  max-height: calc(100vh - 80px);
+  background: rgba(23,24,26,.99);
+}
+#panel-wrap.sidebar-open { width: min(680px, 96vw); transform: none; }
+.drag-pill { min-width: 24px; }
+@media (max-width: 660px) {
+  .drag-label, .tb-hide span:not(.chev) { display: none; }
+  .signal-primary { min-width: 128px; }
+  .signal-engine { display: none; }
+  #panel { padding: 17px 18px 15px; }
+  .ai-text { font-size: 20px; }
+  #action-row { overflow-x: auto; justify-content: flex-start; }
+}
+@media (max-height: 430px) {
+  #app { padding-top: 5px; }
+  #panel-wrap { margin-top: 5px; }
+  #panel { max-height: calc(100vh - 88px); }
+  #signal-strip { min-height: 32px; }
+  .prep-status { display: none; }
+}
