@@ -59,7 +59,6 @@ function askInWindow(win, copy, scope) {
 
     // cue deliberately never steals focus — except here. A question about who
     // may read your screen activity is the one thing that should interrupt.
-    if (!win.isVisible()) win.show();
     app.focus({ steal: true });
     win.focus();
 
@@ -72,7 +71,13 @@ async function requestConsent(request, deps) {
   const copy = consentCopy(request);
   const win = deps && deps.getWindow ? deps.getWindow() : null;
 
-  if (win && !win.isDestroyed()) return askInWindow(win, copy, request.scope);
+  if (win && !win.isDestroyed()) {
+    // Let main.js reveal the overlay through its visibility coordinator. Native
+    // isVisible() can be stale after hide() on macOS and direct show() calls
+    // would leave the tray and recovery shortcut out of sync.
+    if (deps && typeof deps.showWindow === 'function') deps.showWindow();
+    return askInWindow(win, copy, request.scope);
+  }
 
   // No window to ask in — during startup, or after the renderer died. Activate
   // first for the same reason as above, or this panel is equally unclickable.
