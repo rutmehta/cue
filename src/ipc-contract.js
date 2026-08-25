@@ -5,7 +5,8 @@ const IPC_INVOKES = Object.freeze({
   sessionCommand: 'session:command',
   windowCommand: 'window:command',
   settingsOpen: 'settings:open',
-  captureProtection: 'capture:protection'
+  captureProtection: 'capture:protection',
+  newChat: 'chat:new'
 });
 
 const IPC_EVENTS = Object.freeze({

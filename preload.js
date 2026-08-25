@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('cue', {
   windowCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.windowCommand, command),
   settingsOpen: () => ipcRenderer.invoke(IPC_INVOKES.settingsOpen),
   captureProtection: () => ipcRenderer.invoke(IPC_INVOKES.captureProtection),
+  newChat: () => ipcRenderer.invoke(IPC_INVOKES.newChat),
   sourceUpdate: (source, patch) => ipcRenderer.send(IPC_SENDS.sourceUpdate, { source, patch }),
   sourcePcm: (source, payload) => ipcRenderer.send(IPC_SENDS.sourcePcm, { source, payload }),
   settingsGet: () => ipcRenderer.invoke('settings:get'),

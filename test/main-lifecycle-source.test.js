@@ -85,6 +85,11 @@ test('preload exposes stable named session APIs and removable snapshot subscript
   assert.match(preloadSource, /return \(\) => ipcRenderer\.removeListener\(channel, listener\)/);
 });
 
+test('New Chat clears conversation context without ending the active session', () => {
+  assert.match(preloadSource, /newChat:\s*\(\)\s*=>\s*ipcRenderer\.invoke\(IPC_INVOKES\.newChat\)/);
+  assert.match(mainSource, /ipcMain\.handle\(IPC_INVOKES\.newChat,\s*\(\)\s*=>\s*\{\s*clearSessionContext\('new-chat'\)/s);
+});
+
 test('renderer source lifecycle and main STT/settings/clear paths update the controller', () => {
   assert.match(mainSource, /IPC_SENDS\.sourceUpdate/);
   assert.match(mainSource, /IPC_SENDS\.sourcePcm/);

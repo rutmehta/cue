@@ -84,6 +84,7 @@ let whisperModelManager = null;
 let localSttManager = null;
 let localSttRuntime = null;
 let llmRequestSequence = 0;
+let chatEpoch = 0;
 const batchAttemptGate = createBatchAttemptGate();
 const streamingCallbackGate = createStreamingCallbackGate();
 let streamingCallbackToken = null;
@@ -580,6 +581,7 @@ async function runFeature(mode, userText) {
   if (!def) return;
   state.busy = true;
   let streamSettled = false; // drop stray tokens from a stream we've already abandoned
+  const requestChatEpoch = chatEpoch;
   let requestId = null;
   let requestStarted = false;
   try {
@@ -662,7 +664,7 @@ async function runFeature(mode, userText) {
           turns: [{ role: 'user', text: built }],
           imageDataUrl,
           onToken: (t) => {
-            if (streamSettled) return;
+            if (streamSettled || requestChatEpoch !== chatEpoch) return;
             rearm();
             const snapshot = sessionController?.getSnapshot();
             if (snapshot?.request.phase !== 'streaming') {
@@ -678,7 +680,7 @@ async function runFeature(mode, userText) {
       clearTimeout(watchdog);
     }
     dispatchSession({ type: 'LLM_REQUEST_FINISHED', id: requestId });
-    send('llm:done', {});
+    if (requestChatEpoch === chatEpoch) send('llm:done', {});
   } catch (e) {
     if (requestStarted) {
       dispatchSession({
@@ -688,7 +690,7 @@ async function runFeature(mode, userText) {
       });
     }
     recordEvent({ level: 'error', event: 'llm_failed', msg: e && e.message ? e.message : String(e), frame: 'runFeature', context: { mode, provider: store.getSettings().provider } });
-    send('llm:error', { message: e && e.message ? e.message : String(e) });
+    if (requestChatEpoch === chatEpoch) send('llm:error', { message: e && e.message ? e.message : String(e) });
   } finally {
     streamSettled = true;
     state.busy = false;
@@ -790,6 +792,10 @@ ipcMain.handle('platform:info', () => ({
 }));
 ipcMain.handle('transcript:clear', () => {
   clearSessionContext();
+  return { ok: true };
+});
+ipcMain.handle(IPC_INVOKES.newChat, () => {
+  clearSessionContext('new-chat');
   return { ok: true };
 });
 ipcMain.on(IPC_SENDS.sourceUpdate, (event, payload) => {
@@ -1012,11 +1018,12 @@ function nudgeOverlay(deltaX) {
   if (!win.isVisible()) showOverlay();
 }
 
-function clearSessionContext() {
+function clearSessionContext(reason = 'clear') {
+  chatEpoch += 1;
   transcript.splice(0, transcript.length);
   dispatchSession({ type: 'TRANSCRIPT_CLEARED' });
-  send('transcript:cleared', {});
-  send('status', { message: 'Conversation context cleared.' });
+  send('transcript:cleared', { reason });
+  send('status', { message: reason === 'new-chat' ? 'New chat started.' : 'Conversation context cleared.' });
 }
 
 function collapseOverlay() {

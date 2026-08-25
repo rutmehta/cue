@@ -26,6 +26,12 @@ test('local engine selector offers fastest Auto plus both supported engines', ()
   assert.match(html, /data-local-engine="whisper"/);
 });
 
+test('overlay exposes a real New Chat action with a local Command-N shortcut', () => {
+  assert.match(html, /id="new-chat-btn"/);
+  assert.match(renderer, /cue\.newChat\(\)/);
+  assert.match(renderer, /\(e\.metaKey\s*\|\|\s*e\.ctrlKey\)\s*&&\s*e\.key\.toLowerCase\(\)\s*===\s*'n'/);
+});
+
 test('resizable overlay preserves a usable viewport and scrolls tall content', () => {
   assert.match(main, /minWidth:\s*520/);
   assert.match(main, /minHeight:\s*320/);

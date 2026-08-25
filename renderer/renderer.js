@@ -17,6 +17,7 @@
   document.querySelector('.act[data-mode="recap"] .ic').innerHTML = icon('refresh-cw', { size: 16 });
   $('#smart-toggle .ic').innerHTML = icon('zap', { size: 14 });
   $('#more-btn').innerHTML = icon('more-horizontal', { size: 18 });
+  $('#new-chat-btn .ic').innerHTML = icon('plus', { size: 14 });
   $('#send-btn').innerHTML = icon('play', { size: 15 });
   const clearIC = document.querySelector('#clear-transcript-btn .ic');
   if (clearIC) clearIC.innerHTML = icon('trash-2', { size: 15 });
@@ -605,6 +606,14 @@
       showToast(`Transcript cleared · ${undoHint}`, 3500);
     });
   }
+  async function startNewChat() {
+    saveToQuestionHistory(input.value);
+    setBusy(false);
+    hideSidebar();
+    await cue.newChat();
+    input.focus();
+  }
+  $('#new-chat-btn').addEventListener('click', () => { void startNewChat(); });
   // ---- capture: mic + system audio (renderer side) ----------------------
   const {
     createAudioCaptureGraph,
@@ -908,12 +917,12 @@
 
   // ---- real-time transcript display (interim + final) ----
   let interimEl = null;
-  cue.on('transcript:cleared', () => {
+  cue.on('transcript:cleared', (event = {}) => {
     clearMessages();
     if (interimEl) { interimEl.textContent = ''; interimEl.classList.remove('show'); }
     clearTranscriptSidebar();
     hardClearSTTFill();
-    showToast('Conversation context cleared', 2200);
+    showToast(event.reason === 'new-chat' ? 'New chat started' : 'Conversation context cleared', 2200);
   });
   function getOrCreateInterimEl() {
     if (!interimEl) {
@@ -1548,6 +1557,10 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !scrim.classList.contains('hidden')) closeSettings();
     if ((e.metaKey || e.ctrlKey) && e.key === ',') { e.preventDefault(); openSettings(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n' && scrim.classList.contains('hidden')) {
+      e.preventDefault();
+      void startNewChat();
+    }
   });
 
   // ---- assistant access request ------------------------------------------
