@@ -25,6 +25,7 @@ const { createLocalSttRuntime } = require('./src/local-stt-runtime');
 const { ParakeetTranscriber } = require('./src/parakeet-transcriber');
 const { inspectParakeet } = require('./src/parakeet-runtime');
 const { WhisperEngine } = require('./src/whisper-engine');
+const { DEFAULTS } = require('./src/shortcuts');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -50,7 +51,10 @@ const captureProtectionByWindow = new WeakMap();
 // false when another application already owns the combination, and nothing used
 // to look at that — so the only symptom was a key that did nothing. Iris reads
 // this and can say which key is taken instead of guessing from a screenshot.
-const shortcutState = { assist: false, say: false, leetcode: false, toggle: false, quit: false };
+const shortcutState = {
+  assist: false, say: false, leetcode: false, toggle: false,
+  moveLeft: false, moveRight: false, clear: false, listening: false, quit: false
+};
 const isMac = process.platform === 'darwin';
 const isWindows = process.platform === 'win32';
 
@@ -785,8 +789,7 @@ ipcMain.handle('platform:info', () => ({
   winSupportsContentProtection: WIN_SUPPORTS_CONTENT_PROTECTION
 }));
 ipcMain.handle('transcript:clear', () => {
-  transcript.splice(0, transcript.length);
-  dispatchSession({ type: 'TRANSCRIPT_CLEARED' });
+  clearSessionContext();
   return { ok: true };
 });
 ipcMain.on(IPC_SENDS.sourceUpdate, (event, payload) => {
@@ -861,16 +864,28 @@ ipcMain.on('permissions:continue', async () => {
 
 // -------- shortcuts --------
 function registerShortcuts() {
-  shortcutState.assist = globalShortcut.register('CommandOrControl+Return', () => runFeature('assist', ''));
-  shortcutState.say = globalShortcut.register('CommandOrControl+Shift+Return', () => runFeature('say', ''));
-  shortcutState.leetcode = globalShortcut.register('CommandOrControl+H', () => runFeature('leetcode', ''));
-  shortcutState.toggle = globalShortcut.register('CommandOrControl+Shift+/', () => {
+  shortcutState.assist = globalShortcut.register(DEFAULTS.assist, () => runFeature('assist', ''));
+  shortcutState.say = globalShortcut.register(DEFAULTS.say, () => runFeature('say', ''));
+  shortcutState.leetcode = globalShortcut.register(DEFAULTS.leetcode, () => runFeature('leetcode', ''));
+  shortcutState.toggle = globalShortcut.register(DEFAULTS.toggle, () => {
     const toggled = lifecycleCoordinator?.command('toggle');
     if (toggled) void toggled.catch((error) => recordEvent({
       level: 'warn', event: 'overlay_toggle_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
     }));
   });
-  shortcutState.quit = globalShortcut.register('CommandOrControl+Shift+X', () => { void requestQuit(); });
+  shortcutState.moveLeft = globalShortcut.register(DEFAULTS.moveLeft, () => nudgeOverlay(-96));
+  shortcutState.moveRight = globalShortcut.register(DEFAULTS.moveRight, () => nudgeOverlay(96));
+  shortcutState.clear = globalShortcut.register(DEFAULTS.clear, clearSessionContext);
+  shortcutState.listening = globalShortcut.register(DEFAULTS.listening, () => {
+    const phase = sessionController?.getSnapshot().session.phase || 'idle';
+    const command = phase === 'paused' ? 'resume'
+      : (phase === 'listening' || phase === 'starting') ? 'pause' : 'start';
+    const changed = lifecycleCoordinator?.command(command);
+    if (changed) void changed.catch((error) => recordEvent({
+      level: 'warn', event: 'listening_shortcut_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
+    }));
+  });
+  shortcutState.quit = globalShortcut.register(DEFAULTS.quit, () => { void requestQuit(); });
   for (const [name, wasRegistered] of Object.entries(shortcutState)) {
     if (!wasRegistered) {
       recordEvent({ level: 'warn', event: 'shortcut_unavailable', msg: 'another application holds the ' + name + ' shortcut', frame: 'registerShortcuts', context: { shortcut: name } });
@@ -986,6 +1001,24 @@ function toggleOverlay() {
   else showOverlay();
 }
 
+function nudgeOverlay(deltaX) {
+  if (!win || win.isDestroyed()) return;
+  const bounds = win.getBounds();
+  const targetCenter = { x: bounds.x + deltaX + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) };
+  const display = screen.getDisplayNearestPoint(targetCenter);
+  const area = display.workArea;
+  const x = Math.min(Math.max(bounds.x + deltaX, area.x), area.x + Math.max(0, area.width - bounds.width));
+  win.setBounds({ ...bounds, x });
+  if (!win.isVisible()) showOverlay();
+}
+
+function clearSessionContext() {
+  transcript.splice(0, transcript.length);
+  dispatchSession({ type: 'TRANSCRIPT_CLEARED' });
+  send('transcript:cleared', {});
+  send('status', { message: 'Conversation context cleared.' });
+}
+
 function collapseOverlay() {
   send('hide:toggle', {});
 }
@@ -1067,7 +1100,7 @@ async function createAppTray() {
       Menu,
       icon,
       title: isMac ? 'Cue' : '',
-      tooltip: isMac ? 'Cue — show/hide with ⌘⇧/' : 'Cue — show/hide',
+      tooltip: isMac ? 'Cue — show/hide with ⌘\\' : 'Cue — show/hide',
       getSnapshot: getTraySnapshot,
       subscribe: (listener) => sessionController.subscribe(() => listener(getTraySnapshot())),
       command: (command) => lifecycleCoordinator?.command(command)

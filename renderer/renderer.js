@@ -605,7 +605,6 @@
       showToast(`Transcript cleared · ${undoHint}`, 3500);
     });
   }
-
   // ---- capture: mic + system audio (renderer side) ----------------------
   const {
     createAudioCaptureGraph,
@@ -909,6 +908,13 @@
 
   // ---- real-time transcript display (interim + final) ----
   let interimEl = null;
+  cue.on('transcript:cleared', () => {
+    clearMessages();
+    if (interimEl) { interimEl.textContent = ''; interimEl.classList.remove('show'); }
+    clearTranscriptSidebar();
+    hardClearSTTFill();
+    showToast('Conversation context cleared', 2200);
+  });
   function getOrCreateInterimEl() {
     if (!interimEl) {
       interimEl = document.createElement('div');
@@ -1595,7 +1601,7 @@
   const assistShortcut = isWindows ? '<span class="kbd">Ctrl</span> <span class="kbd">↵</span>' : '<span class="kbd">⌘</span> <span class="kbd">↵</span>';
   const solveShortcut = isWindows ? '<span class="kbd">Ctrl</span> <span class="kbd">H</span>' : '<span class="kbd">⌘</span> <span class="kbd">H</span>';
   const quitShortcut = isWindows ? '<span class="kbd">Ctrl</span><span class="kbd">⇧</span><span class="kbd">X</span>' : '<span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">X</span>';
-  const toggleShortcut = isWindows ? '<span class="kbd">Ctrl</span><span class="kbd">⇧</span><span class="kbd">/</span>' : '<span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">/</span>';
+  const toggleShortcut = isWindows ? '<span class="kbd">Ctrl</span><span class="kbd">\\</span>' : '<span class="kbd">⌘</span><span class="kbd">\\</span>';
   const OB_STEPS = [
     {
       icon: '👋',

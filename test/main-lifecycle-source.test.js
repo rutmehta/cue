@@ -34,10 +34,21 @@ test('main constructs one authoritative controller, lifecycle coordinator, and t
 });
 
 test('global recovery shortcut toggles the native overlay and prepares a visible macOS tray image', () => {
-  assert.match(mainSource, /CommandOrControl\+Shift\+\//);
+  assert.match(mainSource, /DEFAULTS\.toggle/);
   assert.match(mainSource, /lifecycleCoordinator\?\.command\('toggle'\)/);
   assert.match(mainSource, /\.resize\(\{\s*width:\s*18,\s*height:\s*18\s*\}\)/);
   assert.match(mainSource, /setTemplateImage\(true\)/);
+});
+
+test('global overlay controls move, clear context, and toggle listening without ending the session', () => {
+  assert.match(mainSource, /DEFAULTS\.moveLeft/);
+  assert.match(mainSource, /DEFAULTS\.moveRight/);
+  assert.match(mainSource, /DEFAULTS\.clear/);
+  assert.match(mainSource, /DEFAULTS\.listening/);
+  assert.match(mainSource, /function nudgeOverlay\(/);
+  assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
+  assert.match(mainSource, /phase === 'paused' \? 'resume'/);
+  assert.doesNotMatch(mainSource, /DEFAULTS\.listening[^]*command\('end-session'\)/);
 });
 
 test('every Cue window applies content protection before loading renderer content', () => {
