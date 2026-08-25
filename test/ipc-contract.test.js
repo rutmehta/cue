@@ -11,7 +11,8 @@ test('IPC contract has stable invoke and event namespaces for session state', ()
     sessionCommand: 'session:command',
     windowCommand: 'window:command',
     settingsOpen: 'settings:open',
-    captureProtection: 'capture:protection'
+    captureProtection: 'capture:protection',
+    newChat: 'chat:new'
   });
   assert.deepEqual(IPC_EVENTS, { sessionSnapshot: 'session:snapshot' });
   assert.deepEqual(IPC_SENDS, {
