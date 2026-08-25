@@ -34,6 +34,8 @@ test('tray controller routes all menu callbacks and double-click through command
   const handlers = {};
   let created = 0;
   let destroyed = 0;
+  let title = null;
+  let tooltip = null;
   const controller = createTrayController({
     Tray: class {
       constructor(icon) {
@@ -41,16 +43,22 @@ test('tray controller routes all menu callbacks and double-click through command
         assert.equal(icon, 'cue-icon');
       }
       setContextMenu(menu) { menus.push(menu); }
+      setTitle(value) { title = value; }
+      setToolTip(value) { tooltip = value; }
       on(event, handler) { handlers[event] = handler; }
       destroy() { destroyed += 1; }
     },
     Menu: { buildFromTemplate: (template) => template },
     icon: 'cue-icon',
+    title: 'Cue',
+    tooltip: 'Cue — show/hide with ⌘⇧/',
     command: async (name) => commands.push(name),
     getSnapshot: () => ({ session: { phase: 'listening' } })
   });
 
   assert.equal(created, 1);
+  assert.equal(title, 'Cue');
+  assert.equal(tooltip, 'Cue — show/hide with ⌘⇧/');
   assert.equal(menus.length, 1);
   for (const item of menus[0]) await item.click();
   await handlers['double-click']();

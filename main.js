@@ -50,7 +50,7 @@ const captureProtectionByWindow = new WeakMap();
 // false when another application already owns the combination, and nothing used
 // to look at that — so the only symptom was a key that did nothing. Iris reads
 // this and can say which key is taken instead of guessing from a screenshot.
-const shortcutState = { assist: false, say: false, leetcode: false, quit: false };
+const shortcutState = { assist: false, say: false, leetcode: false, toggle: false, quit: false };
 const isMac = process.platform === 'darwin';
 const isWindows = process.platform === 'win32';
 
@@ -864,8 +864,11 @@ function registerShortcuts() {
   shortcutState.assist = globalShortcut.register('CommandOrControl+Return', () => runFeature('assist', ''));
   shortcutState.say = globalShortcut.register('CommandOrControl+Shift+Return', () => runFeature('say', ''));
   shortcutState.leetcode = globalShortcut.register('CommandOrControl+H', () => runFeature('leetcode', ''));
-  shortcutState.hide = globalShortcut.register('CommandOrControl+Shift+/', () => {
-    void lifecycleCoordinator?.command('collapse');
+  shortcutState.toggle = globalShortcut.register('CommandOrControl+Shift+/', () => {
+    const toggled = lifecycleCoordinator?.command('toggle');
+    if (toggled) void toggled.catch((error) => recordEvent({
+      level: 'warn', event: 'overlay_toggle_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
+    }));
   });
   shortcutState.quit = globalShortcut.register('CommandOrControl+Shift+X', () => { void requestQuit(); });
   for (const [name, wasRegistered] of Object.entries(shortcutState)) {
@@ -978,6 +981,11 @@ function hideOverlay() {
   refreshTray();
 }
 
+function toggleOverlay() {
+  if (win && !win.isDestroyed() && win.isVisible()) hideOverlay();
+  else showOverlay();
+}
+
 function collapseOverlay() {
   send('hide:toggle', {});
 }
@@ -1051,11 +1059,15 @@ function requestQuit() {
 
 async function createAppTray() {
   try {
-    const icon = await app.getFileIcon(process.execPath, { size: 'small' });
+    const fileIcon = await app.getFileIcon(process.execPath, { size: 'small' });
+    const icon = fileIcon.resize({ width: 18, height: 18 });
+    if (isMac) icon.setTemplateImage(true);
     trayController = createTrayController({
       Tray,
       Menu,
       icon,
+      title: isMac ? 'Cue' : '',
+      tooltip: isMac ? 'Cue — show/hide with ⌘⇧/' : 'Cue — show/hide',
       getSnapshot: getTraySnapshot,
       subscribe: (listener) => sessionController.subscribe(() => listener(getTraySnapshot())),
       command: (command) => lifecycleCoordinator?.command(command)
@@ -1157,6 +1169,7 @@ async function launchApp() {
     trayEnabled,
     showOverlay,
     hideOverlay,
+    toggleOverlay,
     collapseOverlay,
     startSession: () => sessionController.start(),
     pauseSession: () => sessionController.pause(),

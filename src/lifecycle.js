@@ -1,6 +1,7 @@
 const COMMAND_ACTIONS = Object.freeze({
   show: 'showOverlay',
   hide: 'hideOverlay',
+  toggle: 'toggleOverlay',
   collapse: 'collapseOverlay',
   start: 'startSession',
   pause: 'pauseSession',

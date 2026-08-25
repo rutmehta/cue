@@ -48,6 +48,8 @@ function createTrayController(dependencies = {}) {
   }
 
   const tray = new Tray(icon);
+  if (dependencies.title && typeof tray.setTitle === 'function') tray.setTitle(dependencies.title);
+  if (dependencies.tooltip && typeof tray.setToolTip === 'function') tray.setToolTip(dependencies.tooltip);
   const getSnapshot = dependencies.getSnapshot
     || (sessionController && sessionController.getSnapshot && sessionController.getSnapshot.bind(sessionController))
     || (() => ({}));

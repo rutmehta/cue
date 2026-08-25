@@ -5,7 +5,7 @@ const DEFAULTS = {
   assist: 'CommandOrControl+Return',
   leetcode: 'CommandOrControl+H',
   quit: 'CommandOrControl+Shift+X',
-  hide: 'Shift+Q', // Windows-only convenience (no Cmd key)
+  hide: 'CommandOrControl+Shift+/',
   listening: 'CommandOrControl+Shift+L',
   passthrough: 'CommandOrControl+Shift+I',
   screen: 'CommandOrControl+Shift+S'

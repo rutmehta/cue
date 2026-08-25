@@ -33,6 +33,13 @@ test('main constructs one authoritative controller, lifecycle coordinator, and t
   assert.match(mainSource, /getTraySnapshot/);
 });
 
+test('global recovery shortcut toggles the native overlay and prepares a visible macOS tray image', () => {
+  assert.match(mainSource, /CommandOrControl\+Shift\+\//);
+  assert.match(mainSource, /lifecycleCoordinator\?\.command\('toggle'\)/);
+  assert.match(mainSource, /\.resize\(\{\s*width:\s*18,\s*height:\s*18\s*\}\)/);
+  assert.match(mainSource, /setTemplateImage\(true\)/);
+});
+
 test('every Cue window applies content protection before loading renderer content', () => {
   const overlayStart = mainSource.indexOf('function createWindow()');
   const overlayEnd = mainSource.indexOf('// -------- STT flushing', overlayStart);

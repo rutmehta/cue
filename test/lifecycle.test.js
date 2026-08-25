@@ -58,6 +58,7 @@ test('routes each accepted command to its distinct injected action', async () =>
   const lifecycle = createLifecycleCoordinator({
     showOverlay: () => calls.push('show'),
     hideOverlay: () => calls.push('hide'),
+    toggleOverlay: () => calls.push('toggle'),
     collapseOverlay: () => calls.push('collapse'),
     startSession: () => calls.push('start'),
     pauseSession: () => calls.push('pause'),
@@ -68,17 +69,17 @@ test('routes each accepted command to its distinct injected action', async () =>
     openSettings: () => calls.push('settings')
   });
 
-  for (const command of ['show', 'hide', 'collapse', 'start', 'pause', 'resume', 'end-session', 'unlock', 'recenter', 'settings']) {
+  for (const command of ['show', 'hide', 'toggle', 'collapse', 'start', 'pause', 'resume', 'end-session', 'unlock', 'recenter', 'settings']) {
     await lifecycle.command(command);
   }
 
-  assert.deepEqual(calls, ['show', 'hide', 'collapse', 'start', 'pause', 'resume', 'end', 'unlock', 'recenter', 'settings']);
+  assert.deepEqual(calls, ['show', 'hide', 'toggle', 'collapse', 'start', 'pause', 'resume', 'end', 'unlock', 'recenter', 'settings']);
 });
 
 test('rejects every unknown lifecycle command with TypeError', async () => {
   const lifecycle = createLifecycleCoordinator();
 
-  await assert.rejects(lifecycle.command('toggle'), TypeError);
+  await assert.rejects(lifecycle.command('teleport'), TypeError);
 });
 
 test('quit continues cleanup after a rejected or timed-out stop under one injected bound', async () => {
