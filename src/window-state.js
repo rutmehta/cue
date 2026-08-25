@@ -1,5 +1,8 @@
 const DEFAULT_BOUNDS = Object.freeze({ width: 720, height: 600 });
-const MINIMUM_BOUNDS = Object.freeze({ width: 420, height: 80 });
+// The toolbar and signal rail fit at 520px, while 320px leaves enough room for
+// one answer plus the composer. Smaller native bounds clip controls because a
+// transparent Electron window cannot paint or scroll outside its own surface.
+const MINIMUM_BOUNDS = Object.freeze({ width: 520, height: 320 });
 const HORIZONTAL_REACHABLE_PIXELS = 96;
 const RAIL_REACHABLE_PIXELS = 40;
 const DEFAULT_TOP_OFFSET = 6;

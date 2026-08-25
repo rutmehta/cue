@@ -236,8 +236,8 @@ function createWindow() {
 
   const winOptions = {
     ...bounds,
-    minWidth: 420,
-    minHeight: 80,
+    minWidth: 520,
+    minHeight: 320,
     frame: false,
     transparent: true,
     hasShadow: false,
