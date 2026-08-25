@@ -26,6 +26,7 @@ const { ParakeetTranscriber } = require('./src/parakeet-transcriber');
 const { inspectParakeet } = require('./src/parakeet-runtime');
 const { WhisperEngine } = require('./src/whisper-engine');
 const { DEFAULTS } = require('./src/shortcuts');
+const { createVisibilityLatch } = require('./src/visibility-latch');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
 // start on Electron 31–38 unless these Chromium features are enabled; without
@@ -55,6 +56,7 @@ const shortcutState = {
   assist: false, say: false, leetcode: false, toggle: false,
   moveLeft: false, moveRight: false, clear: false, listening: false, quit: false
 };
+const overlayVisibility = createVisibilityLatch(false);
 const isMac = process.platform === 'darwin';
 const isWindows = process.platform === 'win32';
 
@@ -130,7 +132,7 @@ function getTraySnapshot() {
   const snapshot = sessionController?.getSnapshot() || {};
   return {
     ...snapshot,
-    overlay: { visible: Boolean(win && !win.isDestroyed() && win.isVisible()) }
+    overlay: { visible: Boolean(win && !win.isDestroyed() && overlayVisibility.isVisible()) }
   };
 }
 
@@ -269,6 +271,9 @@ function createWindow() {
 
   const createdWindow = new BrowserWindow(winOptions);
   win = createdWindow;
+  // This latch is the desired overlay state. BrowserWindow.isVisible() can stay
+  // true after hide() on macOS, so it must never decide a recovery shortcut.
+  overlayVisibility.markVisible();
   const protectionStatus = protectWindow(createdWindow);
   createdWindow.setAlwaysOnTop(true, 'screen-saver', 1);
   createdWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -290,6 +295,19 @@ function createWindow() {
   };
   createdWindow.on('moved', persistBounds);
   createdWindow.on('resized', persistBounds);
+  // Do not use BrowserWindow show/hide events to drive desired visibility on
+  // macOS. Electron 33 emits them for occlusion changes as well as explicit
+  // transitions, so another window covering Cue must not alter the toggle.
+  createdWindow.on('minimize', () => {
+    if (win !== createdWindow) return;
+    overlayVisibility.markHidden();
+    refreshTray();
+  });
+  createdWindow.on('restore', () => {
+    if (win !== createdWindow) return;
+    overlayVisibility.markVisible();
+    refreshTray();
+  });
   createdWindow.on('close', (event) => {
     if (quitCleanupStarted) return;
     event.preventDefault();
@@ -297,17 +315,24 @@ function createWindow() {
       void requestQuit();
     } else {
       createdWindow.hide();
+      if (win === createdWindow) overlayVisibility.markHidden();
       refreshTray();
     }
   });
   createdWindow.on('closed', () => {
     clearTimeout(boundsSaveTimer);
-    if (win === createdWindow) win = null;
+    if (win === createdWindow) {
+      win = null;
+      overlayVisibility.markHidden();
+    }
   });
 
   createdWindow.webContents.on('did-finish-load', () => {
     if (createdWindow.isDestroyed()) return;
-    createdWindow.showInactive();
+    // A global hide can arrive while the renderer is loading. Preserve that
+    // request instead of making the overlay flash back into view on load.
+    if (win !== createdWindow) return;
+    if (overlayVisibility.isVisible()) createdWindow.showInactive();
     publishSessionSnapshot();
     refreshTray();
     if (!protectionStatus.configured && protectionStatus.reason) {
@@ -988,9 +1013,11 @@ function createPermissionsWindow() {
 }
 
 function showOverlay() {
+  overlayVisibility.markVisible();
   if (!win || win.isDestroyed()) createWindow();
   if (win && !win.isDestroyed()) {
     win.setIgnoreMouseEvents(false);
+    if (typeof win.isMinimized === 'function' && win.isMinimized()) win.restore();
     win.showInactive();
     publishSessionSnapshot();
     refreshTray();
@@ -999,23 +1026,27 @@ function showOverlay() {
 
 function hideOverlay() {
   if (win && !win.isDestroyed()) win.hide();
+  overlayVisibility.markHidden();
   refreshTray();
 }
 
 function toggleOverlay() {
-  if (win && !win.isDestroyed() && win.isVisible()) hideOverlay();
-  else showOverlay();
+  if (!win || win.isDestroyed() || overlayVisibility.toggleAction() === 'show') showOverlay();
+  else hideOverlay();
 }
 
 function nudgeOverlay(deltaX) {
   if (!win || win.isDestroyed()) return;
+  if (!overlayVisibility.isVisible()) {
+    showOverlay();
+    return;
+  }
   const bounds = win.getBounds();
   const targetCenter = { x: bounds.x + deltaX + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) };
   const display = screen.getDisplayNearestPoint(targetCenter);
   const area = display.workArea;
   const x = Math.min(Math.max(bounds.x + deltaX, area.x), area.x + Math.max(0, area.width - bounds.width));
   win.setBounds({ ...bounds, x });
-  if (!win.isVisible()) showOverlay();
 }
 
 function clearSessionContext(reason = 'clear') {
@@ -1031,10 +1062,7 @@ function collapseOverlay() {
 }
 
 function unlockInteraction() {
-  if (!win || win.isDestroyed()) createWindow();
-  win.setIgnoreMouseEvents(false);
-  win.showInactive();
-  refreshTray();
+  showOverlay();
 }
 
 function lockInteraction() {
@@ -1050,8 +1078,7 @@ function recenterOverlay() {
     savedByDisplay: {}
   });
   win.setBounds(bounds);
-  win.showInactive();
-  refreshTray();
+  showOverlay();
 }
 
 function openSettings() {
@@ -1084,6 +1111,7 @@ function destroyWindowsAndTray() {
   }
   win = null;
   permWin = null;
+  overlayVisibility.markHidden();
   sessionController?.dispose();
 }
 
@@ -1107,7 +1135,7 @@ async function createAppTray() {
       Menu,
       icon,
       title: isMac ? 'Cue' : '',
-      tooltip: isMac ? 'Cue — show/hide with ⌘\\' : 'Cue — show/hide',
+      tooltip: isMac ? 'Cue — recover with ⌘←/→ · toggle ⌘\\' : 'Cue — show/hide',
       getSnapshot: getTraySnapshot,
       subscribe: (listener) => sessionController.subscribe(() => listener(getTraySnapshot())),
       command: (command) => lifecycleCoordinator?.command(command)
@@ -1239,6 +1267,7 @@ async function launchApp() {
     }),
     setCapturing: (active) => active ? sessionController.start() : sessionController.stop(),
     getWindow: () => win,
+    showWindow: showOverlay,
   });
 
   registerShortcuts();

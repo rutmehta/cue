@@ -8,6 +8,7 @@ const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const storeSource = fs.readFileSync(path.join(root, 'src', 'store.js'), 'utf8');
+const appLinkSource = fs.readFileSync(path.join(root, 'src', 'applink.js'), 'utf8');
 
 function occurrences(source, pattern) {
   return (source.match(pattern) || []).length;
@@ -46,9 +47,24 @@ test('global overlay controls move, clear context, and toggle listening without 
   assert.match(mainSource, /DEFAULTS\.clear/);
   assert.match(mainSource, /DEFAULTS\.listening/);
   assert.match(mainSource, /function nudgeOverlay\(/);
+  assert.match(mainSource, /function toggleOverlay\(\)[^]*overlayVisibility\.toggleAction\(\)/);
+  assert.match(mainSource, /function nudgeOverlay\(deltaX\)[^]*if \(!overlayVisibility\.isVisible\(\)\) \{\s*showOverlay\(\);\s*return;\s*\}/);
   assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
   assert.match(mainSource, /phase === 'paused' \? 'resume'/);
   assert.doesNotMatch(mainSource, /DEFAULTS\.listening[^]*command\('end-session'\)/);
+});
+
+test('overlay visibility stays synchronized across native, startup, and consent paths', () => {
+  // Electron 33 maps macOS occlusion to BrowserWindow show/hide events, so those
+  // events cannot be allowed to change the user's desired overlay state.
+  assert.doesNotMatch(mainSource, /createdWindow\.on\('(show|hide)'/);
+  assert.match(mainSource, /createdWindow\.on\('minimize',[^]*overlayVisibility\.markHidden\(\)/);
+  assert.match(mainSource, /createdWindow\.on\('restore',[^]*overlayVisibility\.markVisible\(\)/);
+  assert.match(mainSource, /did-finish-load[^]*if \(win !== createdWindow\) return;[^]*if \(overlayVisibility\.isVisible\(\)\) createdWindow\.showInactive\(\);[^]*publishSessionSnapshot\(\)/);
+  assert.match(mainSource, /function showOverlay\(\)[^]*isMinimized\(\)[^]*restore\(\)[^]*showInactive\(\)/);
+  assert.match(mainSource, /startAppLink\(\{[^]*showWindow: showOverlay/);
+  assert.match(appLinkSource, /deps\.showWindow\(\)/);
+  assert.doesNotMatch(appLinkSource, /\.isVisible\(\)/);
 });
 
 test('every Cue window applies content protection before loading renderer content', () => {
