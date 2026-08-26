@@ -346,15 +346,16 @@ class LocalSttManager {
     if (!firstId) throw new LocalSttError('not_started', 'No local engine is active.', 'Restart local speech recognition.');
     try {
       const result = normalizeResult(await this.engines.get(firstId).transcribe(segment), firstId);
+      if (result.text.trim() === '') return result;
       if (!this._validResult(result)) throw new Error(`${engineTitle(firstId)} returned no valid transcript.`);
       return result;
     } catch (error) {
       this._assertGeneration(generation);
       if (this.requestedEngine !== 'auto' || segment.committed === true) throw error;
       const alternateId = ENGINE_IDS.find((id) => id !== firstId && this.healthyIds.includes(id) && !this.failedEngines.has(id));
+      if (!alternateId) throw error;
       this.failedEngines.add(firstId);
       this.activeEngineId = null;
-      if (!alternateId) throw error;
       const detail = `${engineTitle(firstId)} failed; continuing locally with ${engineTitle(alternateId)}.`;
       this._emit({ phase: 'fallback', activeEngine: null, detail }, generation);
       await this._ensureEngineStarted(alternateId, generation);

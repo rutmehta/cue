@@ -86,6 +86,48 @@ test('Auto selects the only healthy local engine', async () => {
   assert.equal(benchmarkSaves, 0);
 });
 
+test('Auto preserves an empty no-speech result from its only healthy engine', async () => {
+  const parakeet = fakeEngine('parakeet', { text: '', elapsedMs: 7 });
+  const whisper = fakeEngine('whisper', { healthy: false });
+  const manager = new LocalSttManager({ engines: [parakeet, whisper] });
+
+  await manager.start({ requestedEngine: 'auto' });
+
+  assert.deepEqual(await manager.transcribe(segment()), {
+    text: '',
+    elapsedMs: 7,
+    engine: 'parakeet'
+  });
+  assert.equal(manager.getStatus().activeEngine, 'parakeet');
+  assert.equal(whisper.calls.transcribe, 0);
+});
+
+test('a transient failure does not deactivate Auto\'s only healthy engine', async () => {
+  const parakeet = fakeEngine('parakeet');
+  const whisper = fakeEngine('whisper', { healthy: false });
+  const timeout = Object.assign(new Error('transcription timed out'), { code: 'transcription_timeout' });
+  const results = [timeout, { text: 'recovered locally', elapsedMs: 12 }];
+  parakeet.transcribe = async () => {
+    parakeet.calls.transcribe += 1;
+    const next = results.shift();
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  const manager = new LocalSttManager({ engines: [parakeet, whisper] });
+
+  await manager.start({ requestedEngine: 'auto' });
+  await assert.rejects(manager.transcribe(segment()), (error) => error === timeout);
+
+  assert.equal(manager.getStatus().activeEngine, 'parakeet');
+  assert.deepEqual(await manager.transcribe(segment()), {
+    text: 'recovered locally',
+    elapsedMs: 12,
+    engine: 'parakeet'
+  });
+  assert.equal(manager.getStatus().activeEngine, 'parakeet');
+  assert.equal(whisper.calls.transcribe, 0);
+});
+
 test('an explicit engine inspects and starts only that engine', async () => {
   const parakeet = fakeEngine('parakeet');
   const whisper = fakeEngine('whisper', { text: 'chosen' });
