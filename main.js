@@ -2,7 +2,9 @@ const { app, BrowserWindow, ipcMain, globalShortcut, screen, session, desktopCap
 const path = require('path');
 const os = require('os');
 const store = require('./src/store');
-const { captureScreenshot } = require('./src/screen');
+const { captureScreenContext } = require('./src/screen');
+const { acceptScreenCapture } = require('./src/screen-context-policy');
+const { cameraBounds, chooseOverlayBounds } = require('./src/overlay-layout');
 const { createSTT } = require('./src/stt');
 const { parseDocumentFile } = require('./src/resume');
 const { createLLM } = require('./src/llm');
@@ -240,12 +242,13 @@ function createWindow() {
     });
     preferredDisplayId = primaryDisplay.id;
   }
-  const { displayId: _displayId, ...bounds } = resolveOverlayBounds({
+  let { displayId: _displayId, ...bounds } = resolveOverlayBounds({
     displays,
     primaryDisplayId: primaryDisplay.id,
     preferredDisplayId,
     savedByDisplay
   });
+  if (savedSettings.overlay?.layoutMode !== 'manual') bounds = cameraBounds(primaryDisplay.workArea);
 
   const winOptions = {
     ...bounds,
@@ -285,6 +288,13 @@ function createWindow() {
   createdWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   if (isMac && typeof createdWindow.setHiddenInMissionControl === 'function') createdWindow.setHiddenInMissionControl(true);
   createdWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const pinManualPosition = () => {
+    store.setSettings({ overlay: { layoutMode: 'manual' } });
+    send('overlay:layout', { mode: 'manual' });
+  };
+  // These native events describe user drags/resizes, not programmatic setBounds.
+  createdWindow.on('will-move', pinManualPosition);
+  createdWindow.on('will-resize', pinManualPosition);
 
   let boundsSaveTimer = null;
   const persistBounds = () => {
@@ -642,12 +652,26 @@ async function runFeature(mode, userText) {
     }
 
     let imageDataUrl = null;
-    if (def.needsScreen) {
+    if (settings.screenContextEnabled !== false) {
       try {
-        imageDataUrl = await captureScreenshot();
+        send('screen:context', { state: 'capturing' });
+        const display = win && !win.isDestroyed() ? screen.getDisplayMatching(win.getBounds()) : screen.getPrimaryDisplay();
+        const captured = await captureScreenContext({ displayId: display.id });
+        const acceptance = acceptScreenCapture({ captured, enabled: store.getSettings().screenContextEnabled !== false, requestEpoch: requestChatEpoch, currentEpoch: chatEpoch });
+        if (acceptance.state === 'cancelled') return;
+        if (acceptance.state === 'off') {
+          send('screen:context', { state: 'off' });
+        } else {
+        imageDataUrl = captured?.imageDataUrl;
         if (!imageDataUrl) throw new Error('No screen source was available.');
+        if (store.getSettings().overlay?.layoutMode !== 'manual' && win && !win.isDestroyed()) {
+          win.setBounds(chooseOverlayBounds(captured.display, captured.analysis));
+        }
+        send('screen:context', { state: 'captured', capturedAt: Date.now(), displayId: display.id });
+        }
       }
       catch (e) {
+        if (requestChatEpoch !== chatEpoch) return;
         recordEvent({ level: 'error', event: 'screen_capture_failed', msg: e && e.message ? e.message : String(e), frame: 'captureScreenshot', context: { mode } });
         const message = process.platform === 'darwin'
           ? 'Screen capture needs permission — grant Screen Recording to cue in System Settings.'
@@ -655,9 +679,11 @@ async function runFeature(mode, userText) {
             ? 'Screen capture failed. Make sure cue is not blocked by Windows privacy or security software, then try again.'
             : 'Screen capture failed. Check your desktop capture permissions, then try again.';
         send('status', { message });
+        send('screen:context', { state: 'unavailable' });
       }
-    }
+    } else send('screen:context', { state: 'off' });
 
+    if (requestChatEpoch !== chatEpoch) return;
     const settingsForPrompt = store.getSettings();
     const prompt = buildFeatureRequest(mode, {
       plan: promptPlan,
@@ -739,6 +765,12 @@ ipcMain.handle(IPC_INVOKES.sessionCommand, (_event, command) => {
 ipcMain.handle(IPC_INVOKES.windowCommand, (_event, command) => {
   if (!lifecycleCoordinator) throw new Error('Cue window is not ready.');
   if (command === 'lock') return lockInteraction();
+  if (command === 'camera') {
+    store.setSettings({ overlay: { layoutMode: 'camera' } });
+    if (win && !win.isDestroyed()) win.setBounds(cameraBounds(screen.getPrimaryDisplay().workArea));
+    send('overlay:layout', { mode: 'camera' });
+    return { mode: 'camera' };
+  }
   if (!['show', 'hide', 'collapse', 'unlock', 'recenter'].includes(command)) {
     throw new TypeError(`Unknown window command: ${String(command)}`);
   }

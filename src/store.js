@@ -14,6 +14,7 @@ const MAX_AI_RULES_CHARS = 2000;
 const DEFAULTS = {
   provider: 'openai',
   shortcuts: { toggle: SHORTCUTS.toggle },
+  screenContextEnabled: true,
   sttProvider: 'local',
   localStt: {
     engine: 'auto',

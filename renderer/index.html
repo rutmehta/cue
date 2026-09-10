@@ -24,6 +24,11 @@
         <div class="window-options">
           <button id="menu-hide-btn">Hide / show <span id="toggle-shortcut-label"></span></button>
           <button id="more-btn" title="Settings">Settings</button>
+          <button id="camera-center-btn">Center near webcam</button>
+          <button id="screen-context-btn" aria-pressed="true">Screen context on</button>
+          <label class="opacity-control">Background <input id="overlay-opacity" type="range" min="30" max="95" value="62" aria-label="Overlay background opacity" /></label>
+          <button id="menu-suggest-btn">Suggest answer</button>
+          <button id="menu-recap-btn">Recap conversation</button>
           <button id="compact-btn" title="Toggle compact view" aria-pressed="false">Compact</button>
           <button id="appearance-btn">Dark appearance</button>
           <div class="text-controls"><span>Answer size</span><button id="text-smaller-btn" class="text-size-btn" aria-label="Smaller answer text">A−</button><button id="text-larger-btn" class="text-size-btn" aria-label="Larger answer text">A+</button></div>
@@ -47,7 +52,7 @@
         <div class="view-bar" role="tablist" aria-label="Conversation view">
           <button id="answer-tab" role="tab" aria-selected="true" aria-controls="messages">Answer</button>
           <button id="history-btn" role="tab" aria-selected="false" aria-controls="transcript-sidebar" title="View conversation transcript">Transcript</button>
-          <span id="context-note">Conversation assistant</span>
+          <span id="context-note" title="A fresh screenshot is used when you request an answer">Screen on request</span>
         </div>
 
         <!-- Two-column layout: responses (left) + live transcript sidebar (right) -->

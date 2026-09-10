@@ -24,6 +24,38 @@
 
   // ---- state -------------------------------------------------------------
   let settings = null;
+  const opacityControl = $('#overlay-opacity');
+  const savedOpacity = Number(localStorage.getItem('cue.surfaceOpacity')) || 62;
+  function setOverlayOpacity(value) {
+    const opacity = Math.max(30, Math.min(95, Number(value) || 62));
+    document.documentElement.style.setProperty('--overlay-alpha', String(opacity / 100));
+    opacityControl.value = String(opacity);
+    localStorage.setItem('cue.surfaceOpacity', String(opacity));
+  }
+  setOverlayOpacity(savedOpacity);
+  opacityControl.addEventListener('input', event => setOverlayOpacity(event.target.value));
+  $('#camera-center-btn').addEventListener('click', () => { void cue.windowCommand('camera'); });
+  $('#menu-suggest-btn').addEventListener('click', () => runMode('say', ''));
+  $('#menu-recap-btn').addEventListener('click', () => runMode('recap', ''));
+  function updateScreenContextControl() {
+    const enabled = settings?.screenContextEnabled !== false;
+    $('#screen-context-btn').textContent = enabled ? 'Screen context on' : 'Screen context off';
+    $('#screen-context-btn').setAttribute('aria-pressed', String(enabled));
+    $('#context-note').textContent = enabled ? 'Screen on request' : 'Screen off';
+  }
+  $('#screen-context-btn').addEventListener('click', async () => {
+    settings.screenContextEnabled = settings.screenContextEnabled === false;
+    await cue.settingsSet({ screenContextEnabled: settings.screenContextEnabled });
+    updateScreenContextControl();
+  });
+  cue.on('screen:context', event => {
+    $('#context-note').textContent = event.state === 'captured' ? 'Screen attached' : event.state === 'capturing' ? 'Reading screen…' : event.state === 'off' ? 'Screen off' : 'Screen unavailable';
+    $('#context-note').title = event.capturedAt ? `Screenshot captured at ${new Date(event.capturedAt).toLocaleTimeString()}. Refreshed on your next request.` : 'A fresh screenshot is used only when you request an answer and screen context is on.';
+  });
+  cue.on('overlay:layout', event => {
+    if (settings) settings.overlay = { ...settings.overlay, layoutMode: event.mode };
+    $('#camera-center-btn').textContent = event.mode === 'manual' ? 'Center near webcam (position pinned)' : 'Center near webcam';
+  });
   function setAppearance(appearance) {
     document.body.dataset.appearance = appearance;
     $('#appearance-btn').textContent = appearance === 'dark' ? 'Light appearance' : 'Dark appearance';
@@ -40,7 +72,10 @@
     compactButton.textContent = compact ? 'Expand' : 'Compact';
     localStorage.setItem('cue.compact', String(compact));
   }
-  setCompact(localStorage.getItem('cue.compact') === 'true');
+  if (!localStorage.getItem('cue.cameraLayoutIntroduced')) {
+    setCompact(true);
+    localStorage.setItem('cue.cameraLayoutIntroduced', 'true');
+  } else setCompact(localStorage.getItem('cue.compact') === 'true');
   compactButton.addEventListener('click', () => setCompact(!document.body.classList.contains('compact')));
   let answerSize = Math.min(32, Math.max(16, Number(localStorage.getItem('cue.answerSize')) || 23));
   function setAnswerSize(size) {
@@ -1244,6 +1279,7 @@
   function updateSmartTooltip() {
     if (!settings) return;
     updateHideShortcut();
+    updateScreenContextControl();
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
     const fast = settings.provider === 'codex' && (!m.fast || m.fast === 'auto') ? 'Codex default' : m.fast || 'fast model';
     const smart = settings.provider === 'codex' && (!m.smart || m.smart === 'auto') ? 'Codex default' : m.smart || 'smart model';

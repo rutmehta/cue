@@ -143,3 +143,47 @@ body[data-appearance="dark"] #app, body[data-appearance="dark"] #settings {
   .empty-state h1 { font-size: 22px; margin-bottom: 6px; }
   .empty-state p { font-size: 13px; }
 }
+
+/* Webcam reading surface: translucency belongs to one backdrop; text stays opaque.
+   Unlike whole-window opacity, this keeps the answer readable over other apps. */
+#app {
+  width: 100%; padding: 6px; border-radius: 16px;
+  background: rgba(246, 247, 248, var(--overlay-alpha, .62));
+  border: 1px solid rgba(95, 108, 120, .23);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3);
+}
+body[data-appearance="dark"] #app {
+  background: rgba(36, 40, 44, var(--overlay-alpha, .62));
+  border-color: rgba(220,225,230,.22);
+}
+#toolbar, #signal-strip, #panel {
+  background: transparent; border: none; box-shadow: none;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+#toolbar { width: 100%; min-height: 38px; height: 38px; padding: 2px 8px; border-radius: 10px; }
+#toolbar .drag-label { font-size: 16px; }
+#toolbar .tb-stop { min-width: 84px; height: 28px; }
+#toolbar .drag-pill { min-height: 28px; }
+#signal-strip { min-height: 24px; padding: 2px 10px 6px; }
+#panel { padding: 0 12px 10px; border-radius: 0; }
+.view-bar, .view-bar button { height: 32px; }
+.view-bar { margin-bottom: 4px; gap: 16px; border-color: rgba(120,130,140,.25); }
+#context-note { font-size: 10px; }
+#composer, #composer.listening { padding: 7px 9px; gap: 3px; background: rgba(246,247,248,.3); border-color: rgba(100,115,125,.24); border-radius: 8px; }
+body[data-appearance="dark"] #composer { background: rgba(36,40,44,.28); border-color: rgba(210,220,230,.25); }
+#input, #placeholder { font-size: 13px; line-height: 20px; }
+#messages { padding-top: 3px; }
+.ai-text, .ai-text.small, .compact .ai-text { line-height: 1.38; font-weight: 500; text-shadow: 0 1px 1px rgba(255,255,255,.25); }
+body[data-appearance="dark"] .ai-text { text-shadow: 0 1px 2px rgba(0,0,0,.45); }
+.ai-text p { margin-bottom: 10px; }
+.compact #action-row { display: none; }
+.compact .user-bubble { font-size: 11px; padding: 3px 0; margin-bottom: 6px; }
+.compact .response-sep { margin: 5px 0; }
+.compact #panel { padding: 0 12px 8px; }
+.compact .empty-state { margin: 0; padding: 14px 2px; }
+.compact .empty-state h1 { font-size: 22px; }
+.compact .empty-state p { font-size: 13px; }
+.opacity-control { display: flex; align-items: center; gap: 10px; padding: 8px; color: var(--ink); font-size: 12px; }
+.opacity-control input { width: 105px; accent-color: var(--action); }
+#toolbar #screen-context-btn { font-size: 12px; }
+.window-options { width: 250px; max-height: min(380px, calc(100vh - 70px)); overflow-y: auto; }

@@ -42,7 +42,13 @@ window.addEventListener('unhandledrejection', event => parent.postMessage({error
 const page = `<!doctype html><html><head><title>Cue workspace preview</title><style>body{font:14px system-ui;background:#dce2e6;margin:24px}nav{display:flex;gap:8px;align-items:center;margin-bottom:16px}iframe{border:0;width:720px;height:600px}button,select{padding:8px}#result{margin-top:12px}</style></head><body><nav><strong>Cue · synthetic preview</strong><select id="size" aria-label="Viewport size"><option value="720,600">720 × 600</option><option value="520,320">520 × 320</option><option value="1000,720">1000 × 720</option></select><button id="sample">Load sample conversation</button><button id="check">Check layout</button></nav><iframe title="Cue preview" src="/app"></iframe><div id="result" role="status"></div><script>const frame=document.querySelector('iframe');document.querySelector('#size').onchange=e=>{const [w,h]=e.target.value.split(',');frame.style.width=w+'px';frame.style.height=h+'px';};document.querySelector('#sample').onclick=()=>frame.contentWindow.previewSample();document.querySelector('#check').onclick=()=>document.querySelector('#result').textContent=frame.contentWindow.previewCheck();window.addEventListener('message',e=>{if(e.data.error) document.querySelector('#result').textContent=e.data.error;});</script></body></html>`;
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 http.createServer((req, res) => {
-  if (req.url === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(page); }
+  if (req.url === '/') {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.end(page.replace('<option value="720,600">', '<option value="600,410">600 × 410</option><option value="720,600">')
+      .replace('</style>', 'iframe{width:600px;height:410px}body.dense{background:repeating-linear-gradient(0deg,#ced5db 0 2px,#fff 2px 18px)}body.dark{background:#18222b}</style>')
+      .replace('</nav>', '<button id="background">Change background</button></nav>')
+      .replace("const frame=document.querySelector('iframe');", "let bg=0;document.querySelector('#background').onclick=()=>{document.body.className=['','dense','dark'][++bg%3];};const frame=document.querySelector('iframe');"));
+  }
   if (req.url === '/preview-bridge.js') { res.setHeader('Content-Type', 'text/javascript'); return res.end(bridge); }
   const name = req.url === '/app' ? 'index.html' : path.basename(req.url || '');
   if (!/^[a-z0-9.-]+$/.test(name)) { res.writeHead(404); return res.end(); }
