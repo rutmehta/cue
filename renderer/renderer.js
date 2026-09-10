@@ -16,7 +16,7 @@
   document.querySelector('.act[data-mode="followup"] .ic').innerHTML = icon('message-circle', { size: 16 });
   document.querySelector('.act[data-mode="recap"] .ic').innerHTML = icon('refresh-cw', { size: 16 });
   $('#smart-toggle .ic').innerHTML = icon('zap', { size: 14 });
-  $('#more-btn').innerHTML = icon('more-horizontal', { size: 18 });
+  $('#more-btn').textContent = 'Settings';
   $('#new-chat-btn .ic').innerHTML = icon('plus', { size: 14 });
   $('#send-btn').innerHTML = icon('play', { size: 15 });
   const clearIC = document.querySelector('#clear-transcript-btn .ic');
@@ -24,6 +24,35 @@
 
   // ---- state -------------------------------------------------------------
   let settings = null;
+  function setAppearance(appearance) {
+    document.body.dataset.appearance = appearance;
+    $('#appearance-btn').textContent = appearance === 'dark' ? 'Light appearance' : 'Dark appearance';
+    localStorage.setItem('cue.appearance', appearance);
+  }
+  setAppearance(localStorage.getItem('cue.appearance') || 'light');
+  $('#appearance-btn').addEventListener('click', () => setAppearance(document.body.dataset.appearance === 'dark' ? 'light' : 'dark'));
+  let latestQuestion = '';
+  const cloudStates = {};
+  const compactButton = $('#compact-btn');
+  function setCompact(compact) {
+    document.body.classList.toggle('compact', compact);
+    compactButton.setAttribute('aria-pressed', String(compact));
+    compactButton.textContent = compact ? 'Expand' : 'Compact';
+    localStorage.setItem('cue.compact', String(compact));
+  }
+  setCompact(localStorage.getItem('cue.compact') === 'true');
+  compactButton.addEventListener('click', () => setCompact(!document.body.classList.contains('compact')));
+  let answerSize = Math.min(32, Math.max(16, Number(localStorage.getItem('cue.answerSize')) || 23));
+  function setAnswerSize(size) {
+    answerSize = Math.min(32, Math.max(16, size));
+    document.documentElement.style.setProperty('--answer-size', `${answerSize}px`);
+    localStorage.setItem('cue.answerSize', String(answerSize));
+    $('#text-smaller-btn').disabled = answerSize === 16;
+    $('#text-larger-btn').disabled = answerSize === 32;
+  }
+  setAnswerSize(answerSize);
+  $('#text-smaller-btn').addEventListener('click', () => setAnswerSize(answerSize - 1));
+  $('#text-larger-btn').addEventListener('click', () => setAnswerSize(answerSize + 1));
   let whisperOverview = null;
   let busy = false;
   let aiEl = null;       // current streaming <div class="ai-text">
@@ -546,9 +575,15 @@
 
   // Smart toggle
   const smartBtn = $('#smart-toggle');
+  $('#answer-model').addEventListener('change', async (event) => {
+    settings.smart = event.target.value === 'smart';
+    await cue.settingsSet({ smart: settings.smart });
+    updateSmartTooltip();
+  });
   smartBtn.addEventListener('click', async () => {
     settings.smart = !settings.smart;
     smartBtn.classList.toggle('on', settings.smart);
+    updateSmartTooltip();
     await cue.settingsSet({ smart: settings.smart });
   });
 
@@ -708,7 +743,13 @@
   }
 
   // ---- transcript history sidebar (hidden by default, manual toggle) ----
-  let tsSidebarInterimEl = null;
+  const tsSidebarInterims = {};
+  let transcriptFollowLive = true;
+  $('#ts-list').addEventListener('scroll', () => {
+    if (!document.body.classList.contains('transcript-open')) return;
+    const list = $('#ts-list');
+    transcriptFollowLive = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+  });
   let sidebarOpen = false;
   // Track last committed row per channel — all chunks from same speaker go in one row
   const tsLastRow = { you: null, them: null };
@@ -716,6 +757,9 @@
   const TS_SENTENCE_GAP_MS = 10000; // 10s silence = new row
 
   function showSidebar() {
+    document.body.classList.add('transcript-open');
+    $('#history-btn').setAttribute('aria-selected', 'true');
+    $('#answer-tab').setAttribute('aria-selected', 'false');
     const sidebar = document.getElementById('transcript-sidebar');
     const historyBtn = document.getElementById('history-btn');
     if (sidebar) sidebar.classList.remove('hidden');
@@ -723,9 +767,13 @@
     const panelWrap = document.getElementById('panel-wrap');
     if (panelWrap) panelWrap.classList.add('sidebar-open');
     sidebarOpen = true;
+    if (transcriptFollowLive) requestAnimationFrame(() => { $('#ts-list').scrollTop = $('#ts-list').scrollHeight; });
   }
 
   function hideSidebar() {
+    document.body.classList.remove('transcript-open');
+    $('#history-btn').setAttribute('aria-selected', 'false');
+    $('#answer-tab').setAttribute('aria-selected', 'true');
     const sidebar = document.getElementById('transcript-sidebar');
     const historyBtn = document.getElementById('history-btn');
     if (sidebar) sidebar.classList.add('hidden');
@@ -753,9 +801,16 @@
   // History button toggle
   const historyBtn = document.getElementById('history-btn');
   if (historyBtn) {
-    historyBtn.innerHTML = icon('message-square-text', { size: 15 });
-    historyBtn.addEventListener('click', toggleSidebar);
+    historyBtn.addEventListener('click', showSidebar);
   }
+  $('#answer-tab').addEventListener('click', hideSidebar);
+  $('#panel-main').insertBefore($('#transcript-sidebar'), $('#messages'));
+  $('#window-menu').addEventListener('click', (event) => {
+    if (event.target.closest('button') && !event.target.closest('.text-controls')) $('#window-menu').open = false;
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('#window-menu')) $('#window-menu').open = false;
+  });
 
   // Close sidebar button
   const closeSidebarBtn = document.getElementById('close-sidebar-btn');
@@ -766,12 +821,14 @@
   function appendTranscriptHistoryTurn(channel, text, isInterim) {
     const list = document.getElementById('ts-list');
     if (!list) return;
+    const followLive = transcriptFollowLive;
 
     // Remove placeholder on first real turn
     const ph = list.querySelector('.ts-placeholder');
     if (ph) ph.remove();
 
     if (isInterim) {
+      let tsSidebarInterimEl = tsSidebarInterims[channel];
       // Update the single floating interim row
       if (!tsSidebarInterimEl) {
         tsSidebarInterimEl = document.createElement('div');
@@ -784,11 +841,13 @@
         tsSidebarInterimEl.appendChild(chLabel);
         tsSidebarInterimEl.appendChild(txt);
         list.appendChild(tsSidebarInterimEl);
+        tsSidebarInterims[channel] = tsSidebarInterimEl;
       }
       tsSidebarInterimEl.querySelector('.ts-text').textContent = text;
     } else {
       // Remove interim row
-      if (tsSidebarInterimEl) { tsSidebarInterimEl.remove(); tsSidebarInterimEl = null; }
+      tsSidebarInterims[channel]?.remove();
+      delete tsSidebarInterims[channel];
 
       const existingRow = tsLastRow[channel];
       const useExisting = existingRow && existingRow.isConnected;
@@ -827,14 +886,30 @@
       clearTimeout(tsRowTimer[other]);
       tsLastRow[other] = null;
 
-      list.scrollTop = list.scrollHeight;
     }
+    if (followLive) list.scrollTop = list.scrollHeight;
   }
 
+  $('#jump-live-btn').addEventListener('click', () => {
+    transcriptFollowLive = true;
+    const list = $('#ts-list');
+    list.scrollTop = list.scrollHeight;
+  });
+  $('#use-question-btn').addEventListener('click', () => {
+    if (!latestQuestion) return showToast('No meeting speech yet', 1800);
+    input.value = input.value.trim() ? input.value + '\n' + latestQuestion : latestQuestion;
+    inputFromSTT = false;
+    syncPlaceholder();
+    updateSendButtonState();
+    input.focus();
+  });
+
   function clearTranscriptSidebar() {
+    transcriptFollowLive = true;
+    latestQuestion = '';
     const list = document.getElementById('ts-list');
     if (list) list.innerHTML = '<div class="ts-placeholder">Conversation history will appear here when listening.</div>';
-    tsSidebarInterimEl = null;
+    for (const channel of Object.keys(tsSidebarInterims)) delete tsSidebarInterims[channel];
     tsLastRow.you = null; tsLastRow.them = null;
     clearTimeout(tsRowTimer.you); clearTimeout(tsRowTimer.them);
   }
@@ -857,7 +932,7 @@
       stopping: 'Stopping listening',
       error: 'Retry listening'
     };
-    const shortLabels = { idle: 'Start', starting: 'Pause', listening: 'Pause', paused: 'Resume', stopping: 'Stopping…', error: 'Retry' };
+    const shortLabels = { idle: 'Listen', starting: 'Pause', listening: 'Pause', paused: 'Resume', stopping: 'Stopping…', error: 'Retry' };
     const statusLabels = { idle: 'Not listening', starting: 'Starting audio…', listening: 'Listening live', paused: 'Paused', stopping: 'Ending session…', error: 'Audio needs attention' };
 
     stopButton.classList.toggle('active', active);
@@ -894,16 +969,27 @@
       const value = phase === 'capturing' || phase === 'listening' || phase === 'active' ? 'LIVE'
         : phase === 'error' ? 'ERROR' : phase === 'unsupported' ? 'N/A'
           : enabled ? phase.toUpperCase() : 'OFF';
-      element.querySelector('strong').textContent = value;
+      element.querySelector('strong').textContent = value.charAt(0) + value.slice(1).toLowerCase();
       element.dataset.state = value.toLowerCase();
+      element.style.setProperty('--audio-level', `${Math.round(Math.min(1, Math.max(0, source?.level || 0)) * 100)}%`);
+      element.title = source?.error?.message || `${id === '#mic-signal' ? 'Microphone' : 'Meeting audio'}: ${value.toLowerCase()}`;
     }
     renderSource('#mic-signal', sources.mic, active);
     renderSource('#system-signal', sources.system, active);
     const configuredEngine = settings.localStt?.engine || 'auto';
     const activeEngine = stt.activeEngine || stt.engine || stt.selectedEngine || stt.route;
+    if (active) {
+      const states = Object.values(cloudStates);
+      const ready = stt.route === 'local' ? ['ready', 'transcribing'].includes(stt.phase)
+        : states.length > 0 && states.every(state => state === 'connected');
+      const sourceLabel = sources.system?.phase === 'error' && sources.mic?.phase === 'live' ? 'Listening to mic'
+        : sources.mic?.phase === 'error' && sources.system?.phase === 'live' ? 'Listening to meeting' : 'Listening live';
+      $('#session-status-label').textContent = stt.phase === 'error' ? 'Transcription unavailable'
+        : ready ? sourceLabel : stt.route === 'local' ? 'Loading local model…' : 'Connecting transcription…';
+    }
     $('#engine-signal').textContent = stt.route === 'local'
-      ? `LOCAL · ${(activeEngine && activeEngine !== 'local' ? activeEngine : configuredEngine).toUpperCase()}`
-      : (stt.route || settings.sttProvider || 'STT').toUpperCase();
+      ? 'Free local' : 'Cloud audio';
+    $('#engine-signal').title = stt.route === 'local' ? `On-device transcription: ${activeEngine || configuredEngine}` : `Transcription provider: ${settings.sttProvider}`;
     if (stt.route === 'local' && active) {
       sttState = stt.phase === 'loading' ? 'loading' : 'local';
       const label = document.getElementById('stt-status');
@@ -968,20 +1054,27 @@
     el.classList.add('show');
     appendTranscriptHistoryTurn(channel, text, true); // update sidebar interim
     
-    // FIX #12: Show interviewer's interim speech in input area
-    if (channel === 'them' && !input.value.trim()) {
-      showInterimInInput(text);
-    }
   });
   cue.on('stt:final', ({ channel, text }) => {
     setLiveDotState('idle');
-    // Clear interim when we get a final
-    if (interimEl) { interimEl.textContent = ''; interimEl.classList.remove('show'); }
+    // Keep the last completed speech visible until new speech arrives.
+    if (text) {
+      const preview = getOrCreateInterimEl();
+      preview.textContent = `${channel === 'them' ? 'Them' : 'You'}: ${text}`;
+      preview.classList.add('show');
+    }
     clearTranscriptInterim();
     clearInputInterim(); // FIX #12: Clear interim text from input area
     // sidebar: the final turn is added via the 'transcript' event below
   });
   cue.on('stt:status', ({ channel, status, provider }) => {
+    if (provider !== 'local') {
+      cloudStates[channel || 'default'] = status;
+      if (['starting', 'listening'].includes(latestSessionSnapshot?.session.phase)) {
+        $('#session-status-label').textContent = Object.values(cloudStates).every(state => state === 'connected')
+          ? 'Listening live' : status === 'error' ? 'Transcription unavailable' : 'Connecting transcription…';
+      }
+    }
     cue.log(`[stt] ${provider || channel || 'unknown'} ${status}`);
     if (provider === 'local') {
       const label = document.getElementById('stt-status');
@@ -1013,6 +1106,8 @@
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
   cue.on('llm:start', ({ userBubble, small, category }) => {
+    hideSidebar();
+    messages.querySelector('.empty-state')?.remove();
     responseCount++;
     if (responseCount > MAX_RESPONSES) {
       const oldest = messages.querySelector('.response-group');
@@ -1060,13 +1155,12 @@
   cue.on('transcript', ({ channel, text }) => {
     if (!text || text.trim().length < 2 || /^[?!.,;:\-…]+$/.test(text.trim())) return;
     appendTranscriptHistoryTurn(channel, text, false);
-    // Auto-fill the input box with Them (interviewer) speech
+    const preview = getOrCreateInterimEl();
+    preview.textContent = `${channel === 'them' ? 'Them' : 'You'}: ${text}`;
+    preview.classList.add('show');
+    // Speech is context; the composer belongs to the user.
     if (channel === 'them') {
-      cancelSoftClear(); // Interviewer is speaking, cancel any pending clear
-      autoFillInputFromSTT(text);
-    } else {
-      // User spoke — soft clear (don't immediately wipe, wait to see if they're really answering)
-      softClearSTTFill();
+      latestQuestion = tsLastRow.them?.querySelector('.ts-text')?.textContent || text;
     }
   });
   let statusTimer = null;
@@ -1144,7 +1238,20 @@
     const fast = m.fast || 'fast model';
     const smart = m.smart || 'smart model';
     const btn = document.getElementById('smart-toggle');
-    if (btn) btn.title = 'Fast: ' + fast + ' · Smart: ' + smart + ' (higher quality, ~2× slower)';
+    const picker = $('#answer-model');
+    picker.replaceChildren();
+    for (const [value, label] of [['fast', fast], ['smart', smart]]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = `${label} (${value === 'fast' ? 'Fast' : 'Quality'})`;
+      picker.appendChild(option);
+    }
+    picker.value = settings.smart ? 'smart' : 'fast';
+    if (btn) {
+      const model = settings.smart ? smart : fast;
+      btn.title = `Active: ${model}. Click to switch between Fast (${fast}) and Smart (${smart}).`;
+      btn.querySelector('span:last-child').textContent = model;
+    }
   }
 
   // ---- microphone permission banner --------------------------------------
@@ -1353,7 +1460,17 @@
     if (!settings.localStt) settings.localStt = {};
     settings.localStt.engine = button.dataset.localEngine;
     document.querySelectorAll('#local-engine-seg button').forEach((candidate) => candidate.classList.toggle('on', candidate === button));
+    updateLocalEnginePanel();
   }));
+
+  function updateLocalEnginePanel() {
+    const native = whisperOverview?.coreml;
+    $('#native-model-status').textContent = native?.message || 'Install Parakeet v2 in SpeakType to reuse its model here.';
+    const engine = settings.localStt?.engine || 'auto';
+    const showWhisper = engine === 'whisper' || (engine === 'auto' && !native?.available);
+    $('#whisper-options').classList.toggle('hidden', !showWhisper);
+    $('#whisper-status').classList.toggle('hidden', !showWhisper);
+  }
 
   function formatBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
@@ -1395,6 +1512,7 @@
     try {
       const previousSelection = $('#whisper-model').value || settings.localWhisper?.modelId || 'base.en';
       whisperOverview = await cue.whisperModels();
+      updateLocalEnginePanel();
       const runtimeBadge = $('#whisper-runtime-status');
       runtimeBadge.classList.toggle('ready', whisperOverview.runtime.available);
       runtimeBadge.classList.toggle('error', !whisperOverview.runtime.available);
@@ -1546,11 +1664,14 @@
   // ---- example conversation (matches the reference screenshot) ------------
   function showExample() {
     clearMessages();
-    addUserBubble('What should I say?');
-    const ai = document.createElement('div');
-    ai.className = 'ai-text';
-    ai.textContent = '“A discounted cash flow model values a company by projecting future free cash flows and discounting them to present value using the weighted average cost of capital.”';
-    messages.appendChild(ai);
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    const title = document.createElement('h1');
+    title.textContent = 'Room to think.';
+    const detail = document.createElement('p');
+    detail.textContent = 'Start listening to follow the conversation, or type a question below. Your transcript stays in its own tab.';
+    empty.append(title, detail);
+    messages.appendChild(empty);
   }
 
   // ---- global keys -------------------------------------------------------

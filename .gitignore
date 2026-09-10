@@ -8,6 +8,9 @@ out/
 
 # Native binaries
 native/systemaudio
+native/bin/
+native/local-speech/.build/
+native/local-speech/.swiftpm/
 
 # Logs
 *.log

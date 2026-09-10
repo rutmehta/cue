@@ -23,6 +23,7 @@ const { batchStatusForResult, createBatchAttemptGate, createStreamingCallbackGat
 const { LocalSttManager } = require('./src/local-stt-manager');
 const { createLocalSttRuntime } = require('./src/local-stt-runtime');
 const { ParakeetTranscriber } = require('./src/parakeet-transcriber');
+const { CoreMLTranscriber } = require('./src/coreml-transcriber');
 const { inspectParakeet } = require('./src/parakeet-runtime');
 const { WhisperEngine } = require('./src/whisper-engine');
 const { DEFAULTS } = require('./src/shortcuts');
@@ -206,7 +207,12 @@ async function getWhisperOverview() {
   if (!whisperModelManager) throw new Error('The local Whisper model manager is not ready.');
   const runtime = getWhisperRuntime();
   const models = await whisperModelManager.listModels();
+  const native = await new CoreMLTranscriber({ appPath: app.getAppPath() }).inspect();
   return {
+    coreml: {
+      available: native.healthy,
+      message: native.healthy ? 'Parakeet v2 is ready. Using SpeakType’s downloaded model; no API charges.' : native.errors.map(error => error.message).join(' ')
+    },
     runtime: {
       available: runtime.available,
       version: runtime.version,
@@ -886,11 +892,13 @@ ipcMain.handle('applink:revoke', (_e, callerId) => revokeAppLinkCaller(callerId)
 ipcMain.handle('permissions:check', () => getPermissionStatus());
 ipcMain.handle('permissions:request', () => requestPermissions());
 ipcMain.on('permissions:continue', async () => {
-  const status = await getPermissionStatus();
-  if (status.mic === 'granted' && status.screen === 'granted') {
-    if (permWin) { permWin.close(); permWin = null; }
-    await launchApp();
-  }
+  // Permission-dependent capture still checks OS access when requested.
+  // A missing screen grant must not block typing, settings, or microphone use.
+  if (!permWin) return;
+  store.setSettings({ permissionsDeferred: true });
+  permWin.close();
+  permWin = null;
+  await launchApp();
 });
 
 // -------- shortcuts --------
@@ -1168,12 +1176,20 @@ async function launchApp() {
       environment: process.env
     })
   });
+  const coremlTranscriber = new CoreMLTranscriber({ appPath: app.getAppPath() });
+  let selectedParakeet = parakeetTranscriber;
   const parakeetEngine = {
     id: 'parakeet',
-    inspect: (settings) => parakeetTranscriber.inspect(settings),
-    start: ({ inspection }) => parakeetTranscriber.start(inspection),
-    transcribe: (segment) => parakeetTranscriber.transcribe(segment),
-    stop: () => parakeetTranscriber.stop()
+    inspect: async (settings) => {
+      const coreml = await coremlTranscriber.inspect();
+      return coreml.healthy ? coreml : parakeetTranscriber.inspect(settings);
+    },
+    start: ({ inspection }) => {
+      selectedParakeet = inspection.model.source === 'speaktype' ? coremlTranscriber : parakeetTranscriber;
+      return selectedParakeet.start(inspection);
+    },
+    transcribe: (segment) => selectedParakeet.transcribe(segment),
+    stop: () => selectedParakeet.stop()
   };
   const whisperEngine = new WhisperEngine({
     modelManager: whisperModelManager,
@@ -1193,6 +1209,7 @@ async function launchApp() {
     })
   });
   localSttRuntime = createLocalSttRuntime({
+    publishInterim: (channel, text) => send('stt:interim', { channel, text }),
     manager: localSttManager,
     publishTranscript,
     publishSpeechState: (channel, speaking, durationMs) => send('vad:state', { channel, speaking, durationMs }),
@@ -1279,7 +1296,7 @@ app.whenReady().then(async () => {
   app.setName('Cue');
   if (isWindows) process.title = 'Cue';
 
-  if (isMac) {
+  if (isMac && !store.getSettings().permissionsDeferred) {
     const allGranted = await requestPermissions();
     if (!allGranted) {
       // Show the permissions gate — the dock stays visible so the user can find the app.

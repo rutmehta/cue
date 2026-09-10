@@ -18,7 +18,9 @@ class UtteranceSegmenter {
     overlapMs = DEFAULT_OVERLAP_MS,
     vadOptions = {},
     onSpeechState = () => {},
-    onUtterance = () => {}
+    onUtterance = () => {},
+    onPreview = () => {},
+    previewIntervalMs = 1600
   }) {
     if (!channel) throw new Error('UtteranceSegmenter requires a channel.');
     this.channel = channel;
@@ -28,6 +30,9 @@ class UtteranceSegmenter {
     this.overlapBytes = this._millisecondsToBytes(overlapMs);
     this.onSpeechState = onSpeechState;
     this.onUtterance = onUtterance;
+    this.onPreview = onPreview;
+    this.previewBytes = this._millisecondsToBytes(previewIntervalMs);
+    this.lastPreviewBytes = 0;
     this.ringBuffer = new AudioRingBuffer(preRollMs, sampleRate);
     this.utteranceChunks = [];
     this.utteranceBytes = 0;
@@ -61,6 +66,10 @@ class UtteranceSegmenter {
     // A chunk that triggered speech start is already present in the pre-roll.
     if (wasCollecting && this.collecting) this._appendChunk(chunk);
     if (this.endedDuringPush) this._finalizeUtterance();
+    else if (this.collecting && this.utteranceBytes - this.lastPreviewBytes >= this.previewBytes) {
+      this.lastPreviewBytes = this.utteranceBytes;
+      this.onPreview(this.channel, Buffer.concat(this.utteranceChunks, this.utteranceBytes));
+    }
   }
 
   stop() {
@@ -79,6 +88,7 @@ class UtteranceSegmenter {
   }
 
   _beginUtterance() {
+    this.lastPreviewBytes = 0;
     this.collecting = true;
     this.startedDuringPush = true;
     const preRoll = this.ringBuffer.read();
@@ -115,6 +125,7 @@ class UtteranceSegmenter {
       const remainder = Buffer.from(combined.subarray(nextStart));
       this.utteranceChunks = remainder.length ? [remainder] : [];
       this.utteranceBytes = remainder.length;
+      this.lastPreviewBytes = 0;
     }
   }
 

@@ -28,6 +28,7 @@ class OpenAIRealtimeSTT {
     this._maxReconnectAttempts = 5;
     this._reconnectDelay = 1000;
     this._pendingAudio = [];
+    this._interimByItem = new Map();
     this._sessionReady = false;
     this._reconnectTimer = null;
     this._disconnectRequested = false;
@@ -56,7 +57,7 @@ class OpenAIRealtimeSTT {
       this.ws.on('open', () => {
         this.connected = true;
         this._reconnectAttempts = 0;
-        this.onStatusChange('connected');
+        this.onStatusChange('connecting');
 
         // Configure the transcription session (GA format)
         this._sendEvent({
@@ -88,6 +89,7 @@ class OpenAIRealtimeSTT {
       this.ws.on('close', (code) => {
         this.connected = false;
         this._sessionReady = false;
+        this._interimByItem.clear();
         this.onStatusChange('disconnected');
         if (code !== 1000 && !this.reconnecting && !this._disconnectRequested) {
           this._attemptReconnect();
@@ -106,18 +108,24 @@ class OpenAIRealtimeSTT {
   _handleEvent(event) {
     switch (event.type) {
       case 'session.created':
+        break;
       case 'session.updated':
         this._sessionReady = true;
+        this.onStatusChange('connected');
         this._flushPendingAudio();
         break;
 
       case 'conversation.item.input_audio_transcription.delta':
         if (event.delta) {
-          this.onInterim(event.delta);
+          const key = `${event.item_id || 'current'}:${event.content_index || 0}`;
+          const text = (this._interimByItem.get(key) || '') + event.delta;
+          this._interimByItem.set(key, text);
+          this.onInterim(text);
         }
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
+        this._interimByItem.delete(`${event.item_id || 'current'}:${event.content_index || 0}`);
         if (event.transcript && event.transcript.trim()) {
           this.onTranscript(event.transcript.trim());
         }
@@ -133,6 +141,7 @@ class OpenAIRealtimeSTT {
         break;
 
       case 'error':
+        this.onStatusChange('error');
         this.onError({
           provider: 'openai-realtime',
           message: event.error?.message || 'Unknown realtime error',
@@ -223,6 +232,7 @@ class OpenAIRealtimeSTT {
     this.reconnecting = false;
     this._sessionReady = false;
     this._pendingAudio = [];
+    this._interimByItem.clear();
     if (this.ws) {
       this.ws.close(1000);
       this.ws = null;

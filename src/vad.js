@@ -30,6 +30,7 @@ class AdaptiveVAD {
     this.speechFrameCount = 0;
     this.silenceFrameCount = 0;
     this.totalSpeechFrames = 0;
+    this.pendingFrame = Buffer.alloc(0);
 
     // Callbacks
     this.onSpeechStart = options.onSpeechStart || (() => {});
@@ -40,7 +41,7 @@ class AdaptiveVAD {
 
   // Process a chunk of Int16 PCM audio
   processChunk(pcmBuffer) {
-    const samples = pcmBuffer.length / 2;
+    if (this.pendingFrame.length) pcmBuffer = Buffer.concat([this.pendingFrame, pcmBuffer]);
     let offset = 0;
 
     while (offset + this.frameSize * 2 <= pcmBuffer.length) {
@@ -49,6 +50,7 @@ class AdaptiveVAD {
       this._processFrame(energy);
       offset += this.frameSize * 2;
     }
+    this.pendingFrame = Buffer.from(pcmBuffer.subarray(offset));
   }
 
   _computeRMS(frame) {
@@ -133,6 +135,7 @@ class AdaptiveVAD {
   }
 
   reset() {
+    this.pendingFrame = Buffer.alloc(0);
     this.state = 'silence';
     this.speechFrameCount = 0;
     this.silenceFrameCount = 0;

@@ -5,6 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
   <title>Cue</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
 </head>
 <body>
   <div id="app">
@@ -12,16 +13,23 @@
     <div id="toolbar" class="drag-handle">
       <div class="drag-pill" title="Drag anywhere on this bar to move Cue">
         <span class="drag-dots" aria-hidden="true"></span>
-        <span class="drag-label">Drag</span>
+        <span class="drag-label">Cue</span>
       </div>
       <button class="tb-logo" id="logo-btn" title="Cue" aria-label="Open Cue guide"></button>
-      <div class="tb-divider"></div>
-      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue"><span class="chev"></span><span>Hide</span></button>
-      <div class="tb-divider"></div>
       <button class="tb-stop" id="stop-btn" title="Start listening" aria-label="Start listening"><span id="session-action-label">Start</span></button>
       <button class="tb-end hidden" id="end-btn" title="End session" aria-label="End session">End</button>
-      <div class="tb-divider"></div>
-      <button class="tb-quit" id="quit-btn" title="Quit Cue (⌘⇧X)" aria-label="Quit Cue">Quit</button>
+      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue"><span class="chev"></span><span>Hide</span></button>
+      <details id="window-menu">
+        <summary aria-label="Window options" title="Window options">···</summary>
+        <div class="window-options">
+          <button id="more-btn" title="Settings">Settings</button>
+          <button id="compact-btn" title="Toggle compact view" aria-pressed="false">Compact</button>
+          <button id="appearance-btn">Dark appearance</button>
+          <div class="text-controls"><span>Answer size</span><button id="text-smaller-btn" class="text-size-btn" aria-label="Smaller answer text">A−</button><button id="text-larger-btn" class="text-size-btn" aria-label="Larger answer text">A+</button></div>
+          <button id="new-chat-btn" title="New chat (⌘N)" aria-label="Start a new chat"><span class="ic"></span><span>New conversation</span></button>
+          <button class="tb-quit" id="quit-btn" title="Quit Cue (⌘⇧X)" aria-label="Quit Cue">Quit</button>
+        </div>
+      </details>
     </div>
 
     <!-- Main assistant panel -->
@@ -30,11 +38,16 @@
       <div id="stt-status" class="stt-status stt-disconnected" title="STT connection status">off</div>
       <div id="signal-strip" aria-live="polite">
         <div class="signal-primary"><span id="signal-dot"></span><span id="session-status-label">Not listening</span></div>
-        <div class="signal-source" id="mic-signal">MIC <strong>OFF</strong></div>
-        <div class="signal-source" id="system-signal">MEETING <strong>OFF</strong></div>
+        <div class="signal-source" id="mic-signal">Mic <strong>Off</strong></div>
+        <div class="signal-source" id="system-signal">Meeting <strong>Off</strong></div>
         <div class="signal-engine" id="engine-signal">LOCAL · AUTO</div>
       </div>
       <div id="panel" class="glass no-drag">
+        <div class="view-bar" role="tablist" aria-label="Conversation view">
+          <button id="answer-tab" role="tab" aria-selected="true" aria-controls="messages">Answer</button>
+          <button id="history-btn" role="tab" aria-selected="false" aria-controls="transcript-sidebar" title="View conversation transcript">Transcript</button>
+          <span id="context-note">Conversation assistant</span>
+        </div>
 
         <!-- Two-column layout: responses (left) + live transcript sidebar (right) -->
         <div id="panel-columns">
@@ -46,13 +59,13 @@
             <div id="action-row">
               <button class="act act-primary" data-mode="say"
                 title="Suggests what to say next based on the conversation">
-                <span class="ic"></span><span>What should I say?</span>
+                <span class="ic"></span><span>Suggest answer</span>
                 <span class="shortcut-hint" id="say-shortcut-hint"></span>
               </button>
               <span class="sep">•</span>
               <button class="act act-secondary" data-mode="assist"
                 title="Scans your screen and conversation to decide what you need">
-                <span class="ic"></span><span>Assist</span>
+                <span class="ic"></span><span>Use screen</span>
                 <span class="shortcut-hint" id="assist-shortcut-hint"></span>
               </button>
               <span class="sep">•</span>
@@ -63,14 +76,13 @@
 
             <div id="composer">
               <div id="input-area">
-                <div id="placeholder">Ask about your screen or conversation, or <span class="keycap">⌘</span><span class="keycap">⏎</span> for Assist</div>
-                <textarea id="input" rows="1" spellcheck="false"></textarea>
+                <div id="placeholder">Ask about the conversation…</div>
+                <textarea id="input" rows="1" spellcheck="false" aria-label="Your question"></textarea>
               </div>
               <div id="composer-bottom">
-                <button id="smart-toggle" class="smart-pill"><span class="ic"></span><span>Smart</span></button>
-                <button id="new-chat-btn" class="new-chat-btn" title="New chat (⌘N)" aria-label="Start a new chat"><span class="ic"></span><span>New chat</span></button>
-                <button id="history-btn" class="history-btn" title="View conversation history"><span class="ic"></span></button>
-                <button id="more-btn" class="more-btn" title="Settings"></button>
+                <button id="smart-toggle" class="smart-pill hidden" tabindex="-1" aria-hidden="true"><span class="ic"></span><span>Smart</span></button>
+                <select id="answer-model" aria-label="Answer model"></select>
+                <span class="composer-hint">Enter to send</span>
                 <div class="spacer"></div>
                 <button id="send-btn" title="Send"></button>
               </div>
@@ -91,13 +103,15 @@
     <!-- Transcript history sidebar — floats OUTSIDE main panel, toggled by history button -->
     <div id="transcript-sidebar" class="transcript-sidebar hidden">
       <div class="ts-header">
-        <span class="ts-title">Conversation History</span>
+        <span class="ts-title">Live conversation</span>
         <button class="ts-close-btn" id="close-sidebar-btn" title="Close history">✕</button>
       </div>
       <div id="ts-list" class="ts-list">
         <div class="ts-placeholder">Conversation history will appear here when listening.</div>
       </div>
       <div class="ts-footer">
+        <button class="ts-clear-btn" id="jump-live-btn">Jump to live</button>
+        <button class="ts-clear-btn" id="use-question-btn">Use latest question</button>
         <button class="ts-clear-btn" id="clear-transcript-btn" title="Clear all history">Clear History</button>
       </div>
     </div>
@@ -113,12 +127,12 @@
 
       <!-- Tab bar -->
       <div class="s-tabs">
-        <button class="s-tab on" data-tab="keys">🔑 Keys</button>
+        <button class="s-tab on" data-tab="keys">Models</button>
         <button class="s-tab" data-tab="transcription">Audio</button>
-        <button class="s-tab" data-tab="profile">📄 Profile</button>
-        <button class="s-tab" data-tab="prep">🎯 Interview Prep</button>
-        <button class="s-tab" data-tab="style">✨ Style</button>
-        <button class="s-tab" data-tab="qa">💬 Q&amp;A</button>
+        <button class="s-tab" data-tab="profile">Profile</button>
+        <button class="s-tab" data-tab="prep">Preparation</button>
+        <button class="s-tab" data-tab="style">Writing</button>
+        <button class="s-tab" data-tab="qa">Q&amp;A</button>
       </div>
 
       <!-- Tab: Keys -->
@@ -191,7 +205,7 @@
           <button data-stt-provider="openai">OpenAI</button>
           <button data-stt-provider="gemini">Gemini</button>
         </div>
-        <div class="s-note">Local mode keeps microphone and meeting audio on this computer. It never silently falls back to a cloud transcription provider.</div>
+        <div class="s-note">Local transcription is free and keeps audio on this Mac. Parakeet reuses the model downloaded by SpeakType. Local mode never falls back to paid transcription. AI answers use your separately selected model.</div>
 
         <label class="s-label">Local engine <span class="s-hint">Auto picks the fastest healthy installed engine</span></label>
         <div class="s-seg" id="local-engine-seg">
@@ -200,7 +214,8 @@
           <button data-local-engine="whisper">Whisper</button>
         </div>
 
-        <div class="whisper-card">
+        <div id="native-model-status" class="s-note" role="status">Checking the installed local model…</div>
+        <div class="whisper-card" id="whisper-options">
           <div class="whisper-runtime-row">
             <span class="s-label">whisper.cpp runtime</span>
             <span id="whisper-runtime-status" class="whisper-badge">Checking…</span>

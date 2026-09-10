@@ -3,6 +3,46 @@ const test = require('node:test');
 
 const { createLocalSttRuntime } = require('../src/local-stt-runtime');
 
+test('stopping flushes the last utterance before shutting down the model', async () => {
+  const events = [];
+  const runtime = createLocalSttRuntime({
+    manager: {
+      async start() {},
+      async transcribe() { events.push('transcribe'); return { text: 'last words' }; },
+      async stop() { events.push('stop'); }
+    },
+    segmenterFactory: options => ({ push() {}, stop() { options.onUtterance(options.channel, Buffer.alloc(3200)); } }),
+    publishTranscript: (channel, text) => events.push(`${channel}: ${text}`)
+  });
+  await runtime.start();
+  await runtime.stop();
+  assert.deepEqual(events, ['transcribe', 'transcribe', 'you: last words', 'them: last words', 'stop']);
+});
+
+test('a stale local preview cannot replace a completed utterance', async () => {
+  const callbacks = {};
+  let resolvePreview;
+  const previews = [], finals = [];
+  let calls = 0;
+  const runtime = createLocalSttRuntime({
+    manager: {
+      async start() {}, async stop() {},
+      transcribe() { return ++calls === 1 ? new Promise(resolve => { resolvePreview = resolve; }) : Promise.resolve({ text: 'complete sentence' }); }
+    },
+    segmenterFactory: options => { callbacks[options.channel] = options; return { push() {}, stop() {} }; },
+    publishInterim: (channel, text) => previews.push(text),
+    publishTranscript: (channel, text) => finals.push(text)
+  });
+  await runtime.start();
+  callbacks.you.onPreview('you', Buffer.alloc(3200));
+  callbacks.you.onUtterance('you', Buffer.alloc(6400));
+  resolvePreview({ text: 'incomplete' });
+  await runtime.whenIdle();
+  assert.deepEqual(previews, []);
+  assert.deepEqual(finals, ['complete sentence']);
+  await runtime.stop();
+});
+
 test('starts fastest local selection, segments both sources, and publishes exact engine results', async () => {
   const calls = { start: [], transcribe: [], stop: 0 };
   const transcripts = [];
@@ -53,4 +93,3 @@ test('rejects malformed PCM and ignores audio outside a running local session', 
   assert.throws(() => runtime.push('mic', { pcm: new ArrayBuffer(2), sampleRate: 16000 }), /channel/);
   assert.equal(transcriptions, 0);
 });
-
