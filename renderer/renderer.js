@@ -595,9 +595,14 @@
   }
   $('#hide-btn').addEventListener('click', () => { void cue.windowCommand('hide'); });
   $('#menu-hide-btn').addEventListener('click', () => { void cue.windowCommand('hide'); });
-  const hideAccelerator = cue.platform === 'darwin' ? '⌘\\' : 'Ctrl+\\';
-  $('#hide-btn').title = `Hide or bring back Cue: ${hideAccelerator}`;
-  $('#toggle-shortcut-label').textContent = hideAccelerator;
+  function updateHideShortcut() {
+    const value = settings?.shortcuts?.toggle || 'CommandOrControl+.';
+    const label = cue.platform === 'darwin' ? value.replace(/CommandOrControl|Command|Cmd/g, '⌘').replace(/Control|Ctrl/g, '⌃').replace(/Alt|Option/g, '⌥').replace(/Shift/g, '⇧').replace(/\+/g, '') : value;
+    $('#hide-btn').title = `Hide or bring back Cue: ${label}`;
+    $('#toggle-shortcut-label').textContent = label;
+    $('#settings-toggle-shortcut').textContent = label;
+  }
+  updateHideShortcut();
   cue.on('hide:toggle', toggleHide);
   $('#quit-btn').addEventListener('click', () => { void cue.sessionCommand('quit'); });
 
@@ -1238,6 +1243,7 @@
 
   function updateSmartTooltip() {
     if (!settings) return;
+    updateHideShortcut();
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
     const fast = settings.provider === 'codex' && (!m.fast || m.fast === 'auto') ? 'Codex default' : m.fast || 'fast model';
     const smart = settings.provider === 'codex' && (!m.smart || m.smart === 'auto') ? 'Codex default' : m.smart || 'smart model';
@@ -1357,6 +1363,7 @@
   });
 
   function fillSettings() {
+    $('#hide-shortcut').value = settings.shortcuts?.toggle || 'CommandOrControl+.';
     // Keys tab
     document.querySelectorAll('#provider-seg button').forEach((b) => b.classList.toggle('on', b.dataset.provider === settings.provider));
     $('#key-openai').value = settings.apiKeys.openai || '';
@@ -1653,6 +1660,7 @@
   cue.on('whisper:models-changed', () => refreshWhisperModels());
 
   async function saveSettings() {
+    settings.shortcuts = { ...settings.shortcuts, toggle: $('#hide-shortcut').value.trim() || 'CommandOrControl+.' };
     // Keys
     settings.apiKeys.openai = $('#key-openai').value.trim();
     settings.apiKeys.anthropic = $('#key-anthropic').value.trim();
@@ -1774,7 +1782,7 @@
   const assistShortcut = isWindows ? '<span class="kbd">Ctrl</span> <span class="kbd">↵</span>' : '<span class="kbd">⌘</span> <span class="kbd">↵</span>';
   const solveShortcut = isWindows ? '<span class="kbd">Ctrl</span> <span class="kbd">H</span>' : '<span class="kbd">⌘</span> <span class="kbd">H</span>';
   const quitShortcut = isWindows ? '<span class="kbd">Ctrl</span><span class="kbd">⇧</span><span class="kbd">X</span>' : '<span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">X</span>';
-  const toggleShortcut = isWindows ? '<span class="kbd">Ctrl</span><span class="kbd">\\</span>' : '<span class="kbd">⌘</span><span class="kbd">\\</span>';
+  const toggleShortcut = isWindows ? '<span class="kbd">Ctrl</span><span class="kbd">.</span>' : '<span class="kbd">⌘</span><span class="kbd">.</span>';
   const OB_STEPS = [
     {
       icon: '👋',

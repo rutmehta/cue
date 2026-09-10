@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const { normalizeBaseUrl } = require('./openai-compatible');
+const { DEFAULTS: SHORTCUTS } = require('./shortcuts');
 
 const FILE = path.join(app.getPath('userData'), 'cue-data.json');
 
@@ -12,6 +13,7 @@ const MAX_AI_RULES_CHARS = 2000;
 
 const DEFAULTS = {
   provider: 'openai',
+  shortcuts: { toggle: SHORTCUTS.toggle },
   sttProvider: 'local',
   localStt: {
     engine: 'auto',

@@ -5,7 +5,7 @@ const DEFAULTS = {
   assist: 'CommandOrControl+Return',
   say: 'CommandOrControl+Shift+Return',
   leetcode: 'CommandOrControl+H',
-  toggle: 'CommandOrControl+\\',
+  toggle: 'CommandOrControl+.',
   moveLeft: 'CommandOrControl+Left',
   moveRight: 'CommandOrControl+Right',
   clear: 'CommandOrControl+R',
@@ -47,4 +47,14 @@ function isValid(accel) {
   return keys.length >= 1;
 }
 
-module.exports = { DEFAULTS, resolveShortcuts, findConflicts, isValid };
+function replaceGlobalShortcut(registry, current, next, handler) {
+  if (current === next) return next;
+  if (!isValid(next)) throw new Error('Enter a valid hide/show shortcut, such as CommandOrControl+.');
+  let registered = false;
+  try { registered = registry.register(next, handler); } catch {}
+  if (!registered) throw new Error('That hide/show shortcut is unavailable. Choose another combination.');
+  if (current) registry.unregister(current);
+  return next;
+}
+
+module.exports = { DEFAULTS, resolveShortcuts, findConflicts, isValid, replaceGlobalShortcut };

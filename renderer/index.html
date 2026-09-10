@@ -18,11 +18,11 @@
       <button class="tb-logo" id="logo-btn" title="Cue" aria-label="Open Cue guide"></button>
       <button class="tb-stop" id="stop-btn" title="Start listening" aria-label="Start listening"><span id="session-action-label">Start</span></button>
       <button class="tb-end hidden" id="end-btn" title="End session" aria-label="End session">End</button>
-      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue" title="Hide or bring back Cue: ⌘\"><span class="chev"></span><span>Hide</span></button>
+      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue" title="Hide or bring back Cue"><span class="chev"></span><span>Hide</span></button>
       <details id="window-menu">
         <summary aria-label="Window options" title="Window options">···</summary>
         <div class="window-options">
-          <button id="menu-hide-btn">Hide / show <span id="toggle-shortcut-label">⌘\</span></button>
+          <button id="menu-hide-btn">Hide / show <span id="toggle-shortcut-label"></span></button>
           <button id="more-btn" title="Settings">Settings</button>
           <button id="compact-btn" title="Toggle compact view" aria-pressed="false">Compact</button>
           <button id="appearance-btn">Dark appearance</button>
@@ -194,8 +194,10 @@
         <div class="s-callers" id="applink-callers"></div>
 
         <label class="s-label">Global keyboard controls</label>
+        <div class="s-field"><span>Hide / show</span><input id="hide-shortcut" type="text" autocomplete="off" aria-label="Hide or show keyboard shortcut" /></div>
+        <p class="s-hint">Use modifier names joined by +. The default is CommandOrControl+. (Command + period on Mac). Choose a combination not used by your other apps.</p>
         <div class="shortcut-grid" aria-label="Cue keyboard shortcuts">
-          <span>Show / hide</span><kbd>⌘ \\</kbd>
+          <span>Show / hide</span><kbd id="settings-toggle-shortcut"></kbd>
           <span>Move / recover overlay</span><kbd>⌘ ← / →</kbd>
           <span>Ask about context</span><kbd>⌘ ↵</kbd>
           <span>What should I say?</span><kbd>⌘ ⇧ ↵</kbd>

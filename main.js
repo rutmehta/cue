@@ -26,7 +26,7 @@ const { ParakeetTranscriber } = require('./src/parakeet-transcriber');
 const { CoreMLTranscriber } = require('./src/coreml-transcriber');
 const { inspectParakeet } = require('./src/parakeet-runtime');
 const { WhisperEngine } = require('./src/whisper-engine');
-const { DEFAULTS } = require('./src/shortcuts');
+const { DEFAULTS, replaceGlobalShortcut } = require('./src/shortcuts');
 const { createVisibilityLatch } = require('./src/visibility-latch');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
@@ -772,8 +772,18 @@ ipcMain.handle('codex:login', async () => {
   return codexLoginPending;
 });
 ipcMain.handle('settings:set', (_e, patch) => {
+  const previousToggle = registeredToggleShortcut;
+  if (patch?.shortcuts?.toggle && patch.shortcuts.toggle !== previousToggle) {
+    registeredToggleShortcut = replaceGlobalShortcut(globalShortcut, previousToggle, patch.shortcuts.toggle, handleToggleShortcut);
+    shortcutState.toggle = true;
+  }
   sttDisabled = false;
-  const settings = store.setSettings(patch);
+  let settings;
+  try { settings = store.setSettings(patch); }
+  catch (error) {
+    if (previousToggle && previousToggle !== registeredToggleShortcut) registeredToggleShortcut = replaceGlobalShortcut(globalShortcut, registeredToggleShortcut, previousToggle, handleToggleShortcut);
+    throw error;
+  }
   dispatchSession({
     type: 'SETTINGS_UPDATED',
     settings: {
@@ -918,16 +928,21 @@ ipcMain.on('permissions:continue', async () => {
 });
 
 // -------- shortcuts --------
+let registeredToggleShortcut = null;
+function handleToggleShortcut() {
+  const toggled = lifecycleCoordinator?.command('toggle');
+  if (toggled) void toggled.catch((error) => recordEvent({
+    level: 'warn', event: 'overlay_toggle_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
+  }));
+}
 function registerShortcuts() {
   shortcutState.assist = globalShortcut.register(DEFAULTS.assist, () => runFeature('assist', ''));
   shortcutState.say = globalShortcut.register(DEFAULTS.say, () => runFeature('say', ''));
   shortcutState.leetcode = globalShortcut.register(DEFAULTS.leetcode, () => runFeature('leetcode', ''));
-  shortcutState.toggle = globalShortcut.register(DEFAULTS.toggle, () => {
-    const toggled = lifecycleCoordinator?.command('toggle');
-    if (toggled) void toggled.catch((error) => recordEvent({
-      level: 'warn', event: 'overlay_toggle_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
-    }));
-  });
+  try {
+    registeredToggleShortcut = replaceGlobalShortcut(globalShortcut, null, store.getSettings().shortcuts?.toggle || DEFAULTS.toggle, handleToggleShortcut);
+    shortcutState.toggle = true;
+  } catch { shortcutState.toggle = false; }
   shortcutState.moveLeft = globalShortcut.register(DEFAULTS.moveLeft, () => nudgeOverlay(-96));
   shortcutState.moveRight = globalShortcut.register(DEFAULTS.moveRight, () => nudgeOverlay(96));
   shortcutState.clear = globalShortcut.register(DEFAULTS.clear, clearSessionContext);
