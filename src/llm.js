@@ -11,6 +11,7 @@ const CUSTOM_PROVIDER = 'custom';
 // available, so it is the single default used everywhere in this file.
 const CURRENT_GEMINI_DEFAULT = 'gemini-2.5-flash';
 const DEFAULT_MODELS = {
+  codex: 'auto',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-3-5-haiku-latest',
   gemini: CURRENT_GEMINI_DEFAULT,
@@ -294,6 +295,14 @@ async function streamOllama({ apiKey, model, system, turns, imageDataUrl, maxTok
 
 function createLLM(settings) {
   const provider = settings.provider;
+  if (provider === 'codex') {
+    const model = settings.models?.codex?.[settings.smart ? 'smart' : 'fast'] || 'auto';
+    const { CodexProvider } = require('./codex-provider');
+    const codex = new CodexProvider();
+    return { provider, model, ready: true, configurationError: '', stream: params => {
+      return codex.stream({ ...params, model, smart: !!settings.smart });
+    }, cancel: () => codex.close() };
+  }
   const keys = settings.apiKeys || {};
   let apiKey = keys[provider];
   let baseURL = '';

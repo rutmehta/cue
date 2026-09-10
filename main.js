@@ -694,6 +694,7 @@ async function runFeature(mode, userText) {
           system,
           turns: [{ role: 'user', text: built }],
           imageDataUrl,
+          onActivity: () => { if (!streamSettled) rearm(); },
           onToken: (t) => {
             if (streamSettled || requestChatEpoch !== chatEpoch) return;
             rearm();
@@ -709,6 +710,7 @@ async function runFeature(mode, userText) {
     } finally {
       streamSettled = true;
       clearTimeout(watchdog);
+      llm.cancel?.();
     }
     dispatchSession({ type: 'LLM_REQUEST_FINISHED', id: requestId });
     if (requestChatEpoch === chatEpoch) send('llm:done', {});
@@ -755,6 +757,20 @@ ipcMain.handle(IPC_INVOKES.captureProtection, (event) => {
   };
 });
 ipcMain.handle('settings:get', () => store.getSettings());
+ipcMain.handle('codex:status', async () => {
+  const { CodexProvider } = require('./src/codex-provider');
+  try { return await new CodexProvider({ timeoutMs: 20000 }).status(); }
+  catch (error) { return { connected: false, models: [], error: error.message }; }
+});
+let codexLoginPending = null;
+ipcMain.handle('codex:login', async () => {
+  if (codexLoginPending) return codexLoginPending;
+  const { CodexProvider } = require('./src/codex-provider');
+  codexLoginPending = new CodexProvider({ timeoutMs: 180000 }).login(url => shell.openExternal(url))
+    .catch(error => ({ connected: false, error: error.message }))
+    .finally(() => { codexLoginPending = null; });
+  return codexLoginPending;
+});
 ipcMain.handle('settings:set', (_e, patch) => {
   sttDisabled = false;
   const settings = store.setSettings(patch);

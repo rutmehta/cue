@@ -47,6 +47,7 @@ const DEFAULTS = {
   windowX: null,
   windowY: null,
   models: {
+    codex: { fast: 'auto', smart: 'auto' },
     openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
     anthropic: { fast: 'claude-3-5-haiku-latest', smart: 'claude-3-5-sonnet-latest' },
     // Kept in sync with CURRENT_GEMINI_DEFAULT in src/llm.js — gemini-2.0-flash

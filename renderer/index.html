@@ -18,10 +18,11 @@
       <button class="tb-logo" id="logo-btn" title="Cue" aria-label="Open Cue guide"></button>
       <button class="tb-stop" id="stop-btn" title="Start listening" aria-label="Start listening"><span id="session-action-label">Start</span></button>
       <button class="tb-end hidden" id="end-btn" title="End session" aria-label="End session">End</button>
-      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue"><span class="chev"></span><span>Hide</span></button>
+      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue" title="Hide or bring back Cue: ⌘\"><span class="chev"></span><span>Hide</span></button>
       <details id="window-menu">
         <summary aria-label="Window options" title="Window options">···</summary>
         <div class="window-options">
+          <button id="menu-hide-btn">Hide / show <span id="toggle-shortcut-label">⌘\</span></button>
           <button id="more-btn" title="Settings">Settings</button>
           <button id="compact-btn" title="Toggle compact view" aria-pressed="false">Compact</button>
           <button id="appearance-btn">Dark appearance</button>
@@ -138,7 +139,8 @@
       <!-- Tab: Keys -->
       <div class="s-body s-tab-pane" data-pane="keys">
         <label class="s-label">Provider</label>
-        <div class="s-seg" id="provider-seg">
+        <div class="s-seg s-seg-wrap" id="provider-seg">
+          <button data-provider="codex">Codex subscription</button>
           <button data-provider="openai">OpenAI</button>
           <button data-provider="anthropic">Anthropic</button>
           <button data-provider="gemini">Gemini</button>
@@ -149,7 +151,16 @@
           <button data-provider="azure">Azure AI</button>
         </div>
 
-        <label class="s-label">API keys &amp; URLs <span class="s-hint">stored locally · never sent to any server</span></label>
+        <div id="codex-settings" class="hidden">
+          <label class="s-label">ChatGPT sign-in</label>
+          <p id="codex-status" role="status">Checking Codex connection…</p>
+          <button id="codex-login-btn" class="s-btn">Sign in with ChatGPT</button>
+          <button id="codex-refresh-btn" class="s-btn">Refresh connection</button>
+          <p class="s-hint">Uses your Codex subscription allowance. No API-key billing or automatic paid fallback. Transcription stays local. Leave models on auto to use your account default.</p>
+          <datalist id="codex-models"></datalist>
+        </div>
+
+        <label class="s-label">API keys &amp; URLs <span class="s-hint">stored locally · sent only to the selected provider</span></label>
         <div class="s-field"><span>OpenAI</span><input id="key-openai" type="password" placeholder="sk-..." autocomplete="off" /></div>
         <div class="s-field"><span>Anthropic</span><input id="key-anthropic" type="password" placeholder="sk-ant-..." autocomplete="off" /></div>
         <div class="s-field"><span>Gemini</span><input id="key-gemini" type="password" placeholder="AIza..." autocomplete="off" /></div>

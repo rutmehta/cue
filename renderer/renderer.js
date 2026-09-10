@@ -594,6 +594,10 @@
     $('#live-dot').style.display = collapsed ? 'none' : '';
   }
   $('#hide-btn').addEventListener('click', () => { void cue.windowCommand('hide'); });
+  $('#menu-hide-btn').addEventListener('click', () => { void cue.windowCommand('hide'); });
+  const hideAccelerator = cue.platform === 'darwin' ? '⌘\\' : 'Ctrl+\\';
+  $('#hide-btn').title = `Hide or bring back Cue: ${hideAccelerator}`;
+  $('#toggle-shortcut-label').textContent = hideAccelerator;
   cue.on('hide:toggle', toggleHide);
   $('#quit-btn').addEventListener('click', () => { void cue.sessionCommand('quit'); });
 
@@ -1235,8 +1239,8 @@
   function updateSmartTooltip() {
     if (!settings) return;
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
-    const fast = m.fast || 'fast model';
-    const smart = m.smart || 'smart model';
+    const fast = settings.provider === 'codex' && (!m.fast || m.fast === 'auto') ? 'Codex default' : m.fast || 'fast model';
+    const smart = settings.provider === 'codex' && (!m.smart || m.smart === 'auto') ? 'Codex default' : m.smart || 'smart model';
     const btn = document.getElementById('smart-toggle');
     const picker = $('#answer-model');
     picker.replaceChildren();
@@ -1315,7 +1319,42 @@
 
   function updateCustomProviderFields() {
     $('#custom-endpoint-settings').classList.toggle('hidden', settings.provider !== 'custom');
+    const codex = settings.provider === 'codex';
+    $('#codex-settings').classList.toggle('hidden', !codex);
+    for (const id of ['model-fast', 'model-smart']) {
+      if (codex) $( '#' + id).setAttribute('list', 'codex-models');
+      else $( '#' + id).removeAttribute('list');
+    }
+    if (codex) void refreshCodexConnection();
   }
+
+  async function refreshCodexConnection() {
+    $('#codex-status').textContent = 'Checking Codex connection…';
+    try {
+      const result = await cue.codexStatus();
+      $('#codex-status').textContent = result.connected
+        ? `Connected with ChatGPT${result.plan ? ' · ' + result.plan : ''}. Uses your Codex allowance.`
+        : result.error || 'Not connected. Sign in with ChatGPT to use your subscription.';
+      $('#codex-login-btn').disabled = !!result.connected;
+      $('#codex-login-btn').textContent = result.connected ? 'Signed in' : 'Sign in with ChatGPT';
+      $('#codex-models').replaceChildren();
+      for (const model of [{ id: 'auto', name: 'Account default' }, ...(result.models || [])]) {
+        const option = document.createElement('option'); option.value = model.id; option.label = model.name;
+        $('#codex-models').appendChild(option);
+      }
+    } catch { $('#codex-status').textContent = 'Could not connect to Codex. Check that Codex is installed.'; }
+  }
+  $('#codex-refresh-btn').addEventListener('click', () => { void refreshCodexConnection(); });
+  $('#codex-login-btn').addEventListener('click', async () => {
+    $('#codex-login-btn').disabled = true;
+    $('#codex-status').textContent = 'Complete the ChatGPT sign-in in your browser…';
+    try {
+      const result = await cue.codexLogin();
+      if (result.error) $('#codex-status').textContent = result.error;
+      else await refreshCodexConnection();
+    } catch { $('#codex-status').textContent = 'Sign-in failed. Please try again.'; }
+    finally { $('#codex-login-btn').disabled = false; }
+  });
 
   function fillSettings() {
     // Keys tab
@@ -1431,7 +1470,7 @@
       settings.starStories ? '✓ stories' : null,
       settings.salaryTarget ? '✓ salary' : null
     ].filter(Boolean);
-    return `${labels[settings.provider] || settings.provider} · STT: ${stt}` + (ready.length ? ' · ' + ready.join(' · ') : '');
+    return `${settings.provider === 'codex' ? 'Codex subscription' : labels[settings.provider] || settings.provider} · STT: ${stt}` + (ready.length ? ' · ' + ready.join(' · ') : '');
   }
 
   document.querySelectorAll('#provider-seg button').forEach((b) => b.addEventListener('click', () => {
