@@ -4,7 +4,7 @@ const os = require('os');
 const store = require('./src/store');
 const { captureScreenContext } = require('./src/screen');
 const { acceptScreenCapture } = require('./src/screen-context-policy');
-const { cameraBounds, chooseOverlayBounds } = require('./src/overlay-layout');
+const { cameraBounds, chooseOverlayBounds, fitAnswerBounds } = require('./src/overlay-layout');
 const { createSTT } = require('./src/stt');
 const { parseDocumentFile } = require('./src/resume');
 const { createLLM } = require('./src/llm');
@@ -90,6 +90,8 @@ let localSttManager = null;
 let localSttRuntime = null;
 let llmRequestSequence = 0;
 let chatEpoch = 0;
+let answerLayoutEpoch = 0;
+let answerLayoutSize = null;
 const batchAttemptGate = createBatchAttemptGate();
 const streamingCallbackGate = createStreamingCallbackGate();
 let streamingCallbackToken = null;
@@ -633,7 +635,8 @@ async function runFeature(mode, userText) {
       : (mode === 'ask' ? userText : mode === 'answerThis' ? `"${(userText || '').slice(0, 60)}${userText && userText.length > 60 ? '…' : ''}"` : null);
     const promptPlan = createPromptPlan(mode, transcript, userText);
     const category = promptPlan.category;
-    send('llm:start', { userBubble, small: !!def.small, category });
+    answerLayoutSize = null;
+    send('llm:start', { userBubble, small: !!def.small, category, layoutToken: ++answerLayoutEpoch });
 
     if (!llm.ready) {
       const message = llm.configurationError || ('Complete the ' + settings.provider + ' provider settings. Model: ' + (llm.model || 'unset') + '.');
@@ -758,6 +761,16 @@ async function runFeature(mode, userText) {
 
 // -------- IPC --------
 ipcMain.handle(IPC_INVOKES.sessionGetSnapshot, () => sessionController?.getSnapshot() || null);
+ipcMain.on('overlay:fit-answer', (event, payload) => {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents || !payload) return;
+  const current = win.getBounds();
+  const bounds = fitAnswerBounds({ area: screen.getDisplayMatching(current).workArea, current,
+    width: payload.width, height: payload.height, token: payload.token, currentToken: answerLayoutEpoch,
+    previous: answerLayoutSize, manual: store.getSettings().overlay?.layoutMode === 'manual' });
+  if (!bounds) return;
+  answerLayoutSize = { width: bounds.width, height: bounds.height };
+  if (bounds.width !== current.width || bounds.height !== current.height) win.setBounds(bounds, !payload.reducedMotion);
+});
 ipcMain.handle(IPC_INVOKES.sessionCommand, (_event, command) => {
   if (!lifecycleCoordinator) throw new Error('Cue session is not ready.');
   return command === 'quit' ? requestQuit() : lifecycleCoordinator.command(command);
@@ -1122,6 +1135,8 @@ function nudgeOverlay(deltaX) {
 
 function clearSessionContext(reason = 'clear') {
   chatEpoch += 1;
+  answerLayoutEpoch += 1;
+  answerLayoutSize = null;
   transcript.splice(0, transcript.length);
   dispatchSession({ type: 'TRANSCRIPT_CLEARED' });
   send('transcript:cleared', { reason });

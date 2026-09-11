@@ -24,10 +24,15 @@
 
   // ---- state -------------------------------------------------------------
   let settings = null;
+  if (!localStorage.getItem('cue.readableSurfaceIntroduced')) {
+    localStorage.setItem('cue.appearance', 'dark');
+    localStorage.setItem('cue.surfaceOpacity', '95');
+    localStorage.setItem('cue.readableSurfaceIntroduced', 'true');
+  }
   const opacityControl = $('#overlay-opacity');
-  const savedOpacity = Number(localStorage.getItem('cue.surfaceOpacity')) || 62;
+  const savedOpacity = Number(localStorage.getItem('cue.surfaceOpacity')) || 95;
   function setOverlayOpacity(value) {
-    const opacity = Math.max(30, Math.min(95, Number(value) || 62));
+    const opacity = Math.max(30, Math.min(95, Number(value) || 95));
     document.documentElement.style.setProperty('--overlay-alpha', String(opacity / 100));
     opacityControl.value = String(opacity);
     localStorage.setItem('cue.surfaceOpacity', String(opacity));
@@ -62,7 +67,7 @@
     $('#appearance-btn').textContent = appearance === 'dark' ? 'Light appearance' : 'Dark appearance';
     localStorage.setItem('cue.appearance', appearance);
   }
-  setAppearance(localStorage.getItem('cue.appearance') || 'light');
+  setAppearance(localStorage.getItem('cue.appearance') || 'dark');
   $('#appearance-btn').addEventListener('click', () => setAppearance(document.body.dataset.appearance === 'dark' ? 'light' : 'dark'));
   let latestQuestion = '';
   const cloudStates = {};
@@ -144,24 +149,72 @@
     messages.appendChild(aiEl);
   }
 
+  let fittingAnswer = null;
+  const answerFit = window.CueAnswerFit.createAnswerFitController({
+    measure: node => {
+      if (!node.isConnected || $('#history-btn').getAttribute('aria-selected') === 'true') return null;
+      const code = [...node.querySelectorAll('pre')];
+      let width = 600;
+      if (code.length) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        let longest = 0;
+        for (const block of code) {
+          ctx.font = getComputedStyle(block).font;
+          for (const line of block.textContent.split('\n')) longest = Math.max(longest, ctx.measureText(line).width);
+        }
+        width = Math.min(900, Math.max(720, Math.ceil(longest + 90)));
+      }
+      const group = node.closest('.response-group') || node;
+      const clone = group.cloneNode(true);
+      Object.assign(clone.style, { position: 'fixed', visibility: 'hidden', pointerEvents: 'none', left: '-10000px', top: '0', width: `${Math.min(width, screen.availWidth) - 40}px`, height: 'auto', maxHeight: 'none', overflow: 'visible' });
+      clone.setAttribute('aria-hidden', 'true');
+      messages.appendChild(clone);
+      const height = Math.ceil(clone.scrollHeight + window.innerHeight - messages.clientHeight + 24);
+      clone.remove();
+      return { width, height, reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches };
+    },
+    apply: payload => cue.fitAnswer(payload)
+  });
+  messages.addEventListener('wheel', () => answerFit.freeze(), { passive: true });
+  messages.addEventListener('pointerdown', () => answerFit.freeze());
+  document.addEventListener('keydown', event => {
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) return;
+    if (event.target.closest?.('input, textarea, select, button, [contenteditable="true"]')) return;
+    answerFit.freeze();
+  });
+  let streamRenderTimer = null;
+  const answerRender = window.CueAnswerFit.createAnswerRenderGate({
+    hasSelection: node => {
+      const selection = window.getSelection();
+      return window.CueAnswerFit.selectionIntersects(node, selection);
+    },
+    render: node => {
+      if (!node.isConnected) return;
+      node.innerHTML = renderMarkdown(node.dataset.raw || '');
+      if (node === fittingAnswer) answerFit.update(node);
+    }
+  });
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (window.CueAnswerFit.selectionIntersects(messages, selection)) answerFit.freeze();
+    answerRender.resume();
+  });
   function appendToken(t) {
     if (!aiEl) startAi(false);
     aiEl.dataset.raw += t;
-    const span = document.createElement('span');
-    span.className = 'w';
-    span.textContent = t;
-    // Guard: caretEl must be a child of aiEl
-    if (caretEl && caretEl.parentNode === aiEl) {
-      aiEl.insertBefore(span, caretEl);
-    } else {
-      aiEl.appendChild(span);
-    }
+    if (streamRenderTimer !== null) return;
+    streamRenderTimer = setTimeout(() => {
+      streamRenderTimer = null;
+      if (!aiEl) return;
+      answerRender.update(aiEl);
+    }, 120);
   }
 
   function finalizeAi() {
     if (!aiEl) return;
-    const raw = aiEl.dataset.raw || '';
-    aiEl.innerHTML = renderMarkdown(raw);
+    clearTimeout(streamRenderTimer); streamRenderTimer = null;
+    answerRender.update(aiEl);
     aiEl = null; caretEl = null;
   }
 
@@ -1049,6 +1102,7 @@
   // ---- real-time transcript display (interim + final) ----
   let interimEl = null;
   cue.on('transcript:cleared', (event = {}) => {
+    answerFit.reset(); answerRender.reset(); fittingAnswer = null; clearTimeout(streamRenderTimer); streamRenderTimer = null;
     clearMessages();
     if (interimEl) { interimEl.textContent = ''; interimEl.classList.remove('show'); }
     clearTranscriptSidebar();
@@ -1150,7 +1204,8 @@
   cue.on('vad:state', ({ channel, speaking }) => {
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
-  cue.on('llm:start', ({ userBubble, small, category }) => {
+  cue.on('llm:start', ({ userBubble, small, category, layoutToken }) => {
+    answerFit.start(layoutToken); clearTimeout(streamRenderTimer); streamRenderTimer = null;
     hideSidebar();
     messages.querySelector('.empty-state')?.remove();
     responseCount++;
@@ -1184,6 +1239,7 @@
     caretEl.className = 'ai-caret';
     aiEl.appendChild(caretEl);
     group.appendChild(aiEl);
+    fittingAnswer = aiEl;
     messages.appendChild(group);
     // Use requestAnimationFrame so the DOM is fully updated before scrolling
     requestAnimationFrame(() => {

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('cue', {
   sessionGetSnapshot: () => ipcRenderer.invoke(IPC_INVOKES.sessionGetSnapshot),
   sessionCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.sessionCommand, command),
   windowCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.windowCommand, command),
+  fitAnswer: (payload) => ipcRenderer.send('overlay:fit-answer', payload),
   settingsOpen: () => ipcRenderer.invoke(IPC_INVOKES.settingsOpen),
   captureProtection: () => ipcRenderer.invoke(IPC_INVOKES.captureProtection),
   newChat: () => ipcRenderer.invoke(IPC_INVOKES.newChat),

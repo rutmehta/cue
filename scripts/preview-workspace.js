@@ -20,6 +20,7 @@ window.cue = new Proxy({
   settingsOpen: async () => emit('settings:open'),
   whisperModels: async () => ({models: [], runtime: {available: false}}),
   ask: () => window.previewSample(),
+  fitAnswer: payload => parent.postMessage({ fit: payload }, location.origin),
   newChat: async () => emit('transcript:cleared'),
 }, { get: (target, key) => key in target ? target[key] : () => Promise.resolve({}) });
 window.CueAudioCapture.createAudioCapture = () => ({startMic: async () => {}, stopMic() {}, startSystem: async () => {}, stopSystem() {}});
@@ -28,8 +29,18 @@ window.previewSample = () => {
     emit('transcript', {channel:'them', text:'How would you diagnose a service that becomes slow under load?'});
     emit('transcript', {channel:'you', text:'I would first establish when the latency changed and check which part of the request is taking longer.'});
   }
-  emit('llm:start', {userBubble:'How would you approach this?', small:false});
+  emit('llm:start', {userBubble:'How would you approach this?', small:false, layoutToken: Date.now()});
   emit('llm:token', {text:'Start by locating the bottleneck.\\n\\nCompare latency, error rate, and traffic before and after the change. Follow one slow request through the service to see whether time is spent in the application, database, or a dependency.\\n\\nThen test one hypothesis at a time, and measure the result before changing anything else.'});
+  emit('llm:done');
+};
+window.previewCode = () => {
+  emit('llm:start', {small:false, layoutToken: Date.now()});
+  emit('llm:token', {text:'Count the available digits, then check each three-digit even number.\\n\\n' + String.fromCharCode(96).repeat(3) + 'python\\nfrom collections import Counter\\nfrom typing import List\\n\\nclass Solution:\\n    def totalNumbers(self, digits: List[int]) -> int:\\n        available = Counter(digits)\\n        answer = 0\\n        for number in range(100, 1000, 2):\\n            needed = Counter([number // 100, (number // 10) % 10, number % 10])\\n            if all(needed[d] <= available[d] for d in needed):\\n                answer += 1\\n        return answer\\n' + String.fromCharCode(96).repeat(3) + '\\n\\nTime: O(n). Space: O(1).'});
+  emit('llm:done');
+};
+window.previewShort = () => {
+  emit('llm:start', {small:false, layoutToken: Date.now()});
+  emit('llm:token', {text:'I would start by checking the slowest dependency, then test one change at a time.'});
   emit('llm:done');
 };
 window.previewCheck = () => {
@@ -46,8 +57,8 @@ http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.end(page.replace('<option value="720,600">', '<option value="600,410">600 × 410</option><option value="720,600">')
       .replace('</style>', 'iframe{width:600px;height:410px}body.dense{background:repeating-linear-gradient(0deg,#ced5db 0 2px,#fff 2px 18px)}body.dark{background:#18222b}</style>')
-      .replace('</nav>', '<button id="background">Change background</button></nav>')
-      .replace("const frame=document.querySelector('iframe');", "let bg=0;document.querySelector('#background').onclick=()=>{document.body.className=['','dense','dark'][++bg%3];};const frame=document.querySelector('iframe');"));
+      .replace('</nav>', '<button id="background">Change background</button><button id="code-sample">Code answer</button><button id="short-sample">Short answer</button></nav>')
+      .replace("const frame=document.querySelector('iframe');", "let bg=0;document.querySelector('#background').onclick=()=>{document.body.className=['','dense','dark'][++bg%3];};const frame=document.querySelector('iframe');document.querySelector('#code-sample').onclick=()=>frame.contentWindow.previewCode();document.querySelector('#short-sample').onclick=()=>frame.contentWindow.previewShort();window.addEventListener('message',e=>{if(e.source===frame.contentWindow && e.data.fit){frame.style.width=Math.min(900,e.data.fit.width)+'px';frame.style.height=Math.max(320,Math.min(760,e.data.fit.height))+'px';document.querySelector('#result').textContent='Answer fit: '+frame.style.width+' × '+frame.style.height;}});"));
   }
   if (req.url === '/preview-bridge.js') { res.setHeader('Content-Type', 'text/javascript'); return res.end(bridge); }
   const name = req.url === '/app' ? 'index.html' : path.basename(req.url || '');

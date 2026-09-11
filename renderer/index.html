@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="workspace.css" />
 </head>
-<body>
+<body data-appearance="dark">
   <div id="app">
     <!-- Dedicated drag handle / top bar -->
     <div id="toolbar" class="drag-handle">
@@ -26,7 +26,7 @@
           <button id="more-btn" title="Settings">Settings</button>
           <button id="camera-center-btn">Center near webcam</button>
           <button id="screen-context-btn" aria-pressed="true">Screen context on</button>
-          <label class="opacity-control">Background <input id="overlay-opacity" type="range" min="30" max="95" value="62" aria-label="Overlay background opacity" /></label>
+          <label class="opacity-control">Background <input id="overlay-opacity" type="range" min="30" max="95" value="95" aria-label="Overlay background opacity" /></label>
           <button id="menu-suggest-btn">Suggest answer</button>
           <button id="menu-solve-btn">Solve code on screen</button>
           <button id="menu-recap-btn">Recap conversation</button>
@@ -363,6 +363,7 @@
   <script src="capture-lifecycle.js"></script>
   <script src="audio-utils.js"></script>
   <script src="audio-capture.js"></script>
+  <script src="answer-fit.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

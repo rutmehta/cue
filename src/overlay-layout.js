@@ -41,4 +41,16 @@ function chooseOverlayBounds(display, image) {
   return best;
 }
 
-module.exports = { cameraBounds, chooseOverlayBounds };
+function fitAnswerBounds({ area, current, width, height, previous, manual, token, currentToken }) {
+  if (manual || token !== currentToken || !Number.isInteger(token) || ![width, height].every(n => Number.isFinite(n) && n > 0)) return null;
+  const maxWidth = Math.min(900, area.width);
+  const maxHeight = Math.min(760, Math.floor(area.height * .85));
+  const w = Math.round(clamp(Math.max(width, previous?.width || 0), Math.min(600, maxWidth), maxWidth));
+  const h = Math.round(clamp(Math.max(height, previous?.height || 0), Math.min(320, maxHeight), maxHeight));
+  return {
+    x: Math.round(clamp(current.x + current.width / 2 - w / 2, area.x, area.x + area.width - w)),
+    y: Math.round(clamp(current.y, area.y, area.y + area.height - h)), width: w, height: h
+  };
+}
+
+module.exports = { cameraBounds, chooseOverlayBounds, fitAnswerBounds };
