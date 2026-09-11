@@ -36,6 +36,7 @@
   opacityControl.addEventListener('input', event => setOverlayOpacity(event.target.value));
   $('#camera-center-btn').addEventListener('click', () => { void cue.windowCommand('camera'); });
   $('#menu-suggest-btn').addEventListener('click', () => runMode('say', ''));
+  $('#menu-solve-btn').addEventListener('click', () => runMode('leetcode', ''));
   $('#menu-recap-btn').addEventListener('click', () => runMode('recap', ''));
   function updateScreenContextControl() {
     const enabled = settings?.screenContextEnabled !== false;

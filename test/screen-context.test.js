@@ -26,7 +26,7 @@ test('screen context captures the requested display and returns matching image a
 
 test('missing requested screen never substitutes another monitor', async () => {
   const s = screenModule([{ display_id: '2', thumbnail }]);
-  assert.equal(await s.captureScreenshot({ displayId: 1 }), null);
+  await assert.rejects(s.captureScreenshot({ displayId: 1 }), /Display 1.*available display IDs: 2/);
 });
 
 test('disconnected screen reports an explicit error', async () => {

@@ -12,10 +12,11 @@ async function captureScreenContext({ displayId } = {}) {
     types: ['screen'],
     thumbnailSize: { width: Math.floor(width * scale), height: Math.floor(height * scale) }
   });
-  if (!sources.length) return null;
+  if (!sources.length) throw new Error('Screen capture returned no sources.');
   const src = sources.find((s) => String(s.display_id) === String(display.id));
+  if (!src) throw new Error(`Display ${display.id} was not available for capture; available display IDs: ${sources.map(s => s.display_id || '(empty)').join(', ')}.`);
   const img = src?.thumbnail;
-  if (!img || img.isEmpty()) return null;
+  if (!img || img.isEmpty()) throw new Error(`Display ${display.id} returned an empty screen image.`);
   const sample = img.resize({ width: 320 });
   return { imageDataUrl: img.toDataURL(), display, analysis: { ...sample.getSize(), bitmap: sample.toBitmap() } };
 }
