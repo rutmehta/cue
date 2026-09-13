@@ -1,7 +1,7 @@
 {
   "name": "cue",
-  "version": "0.2.2",
-  "description": "Open-source cross-platform invisible AI overlay — three separate inputs (screen, mic, system audio) into an LLM. A Cluely-style copilot for meetings and coding problems.",
+  "version": "0.3.0",
+  "description": "Open-source cross-platform invisible AI overlay \u2014 three separate inputs (screen, mic, system audio) into an LLM. A Cluely-style copilot for meetings and coding problems.",
   "license": "GPL-3.0-or-later",
   "author": "cue",
   "main": "main.js",
@@ -17,7 +17,8 @@
     "dist:win": "electron-builder --win",
     "pack:win": "electron-builder --win --dir",
     "dist:linux": "electron-builder --linux AppImage --x64",
-    "dist:linux:arm64": "electron-builder --linux AppImage --arm64"
+    "dist:linux:arm64": "electron-builder --linux AppImage --arm64",
+    "release:mac": "node scripts/release-mac.js"
   },
   "keywords": [
     "electron",
@@ -28,7 +29,7 @@
     "cross-platform"
   ],
   "devDependencies": {
-    "electron": "33.2.1",
+    "electron": "44.3.0",
     "electron-builder": "^26.15.3",
     "extract-zip": "^2.0.1",
     "resedit": "^3.0.2",

@@ -99,7 +99,7 @@ class CodexProvider {
   async status() {
     try {
       await this.connect(); const account = await this.account();
-      return { ...account, models: account.connected ? (await this.models()).map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault })) : [] };
+      return { ...account, models: account.connected ? (await this.models()).map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault, defaultReasoningEffort: m.defaultReasoningEffort, supportedReasoningEfforts: m.supportedReasoningEfforts })) : [] };
     } finally { this.close(); }
   }
 
@@ -131,7 +131,7 @@ class CodexProvider {
     });
   }
 
-  async stream({ system = '', turns = [], imageDataUrl, onToken = () => {}, onActivity = () => {}, model, smart = false }) {
+  async stream({ system = '', turns = [], imageDataUrl, onToken = () => {}, onActivity = () => {}, model, effort: requestedEffort, smart = false }) {
     try {
       await this.connect();
       onActivity();
@@ -143,6 +143,9 @@ class CodexProvider {
       const mcpServers = Object.fromEntries(Object.keys(effective?.config?.mcp_servers || {}).map(name => [name, { enabled: false }]));
       const selected = model && model !== 'auto' ? catalog.find(m => m.model === model) : catalog.find(m => m.isDefault) || catalog[0];
       if (!selected) throw new Error('The selected Codex model is unavailable. Choose an available model in Settings.');
+      if (requestedEffort && requestedEffort !== 'default' && !selected.supportedReasoningEfforts?.some(e => e.reasoningEffort === requestedEffort)) {
+        throw new Error('The selected reasoning effort is unavailable for this model. Choose a supported effort.');
+      }
       const { thread } = await this.request('thread/start', {
         model: selected.model, modelProvider: 'openai', cwd: this.cwd, ephemeral: true,
         sandbox: 'read-only', approvalPolicy: 'never', environments: [], dynamicTools: [], selectedCapabilityRoots: [],
@@ -171,7 +174,7 @@ class CodexProvider {
       completion.catch(() => {});
       const input = [{ type: 'text', text: JSON.stringify(turns.filter(t => ['user', 'assistant'].includes(t.role)).map(t => ({ role: t.role, text: String(t.text || '') }))), text_elements: [] }];
       if (imageDataUrl) input.push({ type: 'image', url: imageDataUrl });
-      const effort = !smart && selected.supportedReasoningEfforts?.some(e => e.reasoningEffort === 'low') ? 'low' : selected.defaultReasoningEffort;
+      const effort = requestedEffort === 'default' ? selected.defaultReasoningEffort : requestedEffort || (!smart && selected.supportedReasoningEfforts?.some(e => e.reasoningEffort === 'low') ? 'low' : selected.defaultReasoningEffort);
       await this.request('turn/start', { threadId: thread.id, input, environments: [], effort, serviceTierForTurn: 'default' });
       return (await completion).text;
     } finally { this.close(); }

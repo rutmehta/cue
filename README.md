@@ -17,6 +17,12 @@ A free, self-hosted alternative to Cluely. Bring your own AI key (OpenAI · Anth
 
 ---
 
+## macOS downloads and updates
+
+Download the signed and notarized Apple Silicon or Intel build from [this fork's latest release](https://github.com/rutmehta/cue/releases/latest), unzip it, and move **Cue.app** to **Applications**. Requires macOS 13 or later. Native Core ML transcription requires Apple Silicon and macOS 14 or later; model weights are downloaded separately.
+
+Starting with **0.3.0**, Cue checks for updates using Sparkle. You can also choose **Check for Updates…** from Cue's menu bar menu. Versions before 0.3.0 need one manual installation to enable future updates. [Release maintenance instructions](docs/releases/README.md).
+
 ## What it does
 
 cue floats a small glass panel on top of everything. It takes **three separate inputs** — your **screen**, your **microphone**, and your **meeting audio** (what the other person says) — and uses an AI model to help you in real time.

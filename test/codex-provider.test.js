@@ -8,6 +8,38 @@ test('Codex answers do not require a platform API key', () => {
   assert.equal(createLLM({ provider: 'codex', apiKeys: {}, models: {} }).ready, true);
 });
 
+test('explicit Codex model takes precedence over legacy presets', () => {
+  assert.equal(createLLM({ provider: 'codex', codexSelection: { model: 'chosen' }, models: { codex: { fast: 'old' } } }).model, 'chosen');
+});
+
+test('selected reasoning effort reaches the answer request and unsupported efforts are rejected', async () => {
+  const { CodexProvider } = require('../src/codex-provider');
+  for (const effort of ['high', 'unsupported']) {
+    const requests = [];
+    const child = fakeProcess((r, send) => {
+      requests.push(r);
+      if (!r.id) return;
+      const results = {
+        initialize: {}, 'account/read': { account: { type: 'chatgpt' } },
+        'config/read': { config: {} },
+        'model/list': { data: [{ model: 'chosen', defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: null },
+        'thread/start': { thread: { id: 't' } }, 'turn/start': {}
+      };
+      send({ id: r.id, result: results[r.method] });
+      if (r.method === 'turn/start') send({ method: 'turn/completed', params: { threadId: 't', turn: { status: 'completed', items: [{ type: 'agentMessage', text: 'Answer' }] } } });
+    });
+    const provider = new CodexProvider({ spawn: () => child, executable: '/codex', timeoutMs: 1000 });
+    if (effort === 'unsupported') {
+      await assert.rejects(provider.stream({ model: 'chosen', effort }), /reasoning effort/i);
+      assert.equal(requests.some(r => r.method === 'turn/start'), false);
+    } else {
+      assert.equal(await provider.stream({ model: 'chosen', effort, smart: false }), 'Answer');
+      assert.equal(requests.find(r => r.method === 'turn/start').params.effort, 'high');
+      assert.equal(requests.find(r => r.method === 'thread/start').params.model, 'chosen');
+    }
+  }
+});
+
 function fakeProcess(onRequest) {
   const child = new EventEmitter();
   child.stdout = new PassThrough(); child.stderr = new PassThrough();

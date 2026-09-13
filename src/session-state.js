@@ -24,7 +24,7 @@ function createInitialSnapshot({ now = Date.now(), settings = {} } = {}) {
       system: { phase: 'off', level: 0, error: null }
     },
     stt: { route: settings.sttProvider === 'local' ? 'local' : 'cloud', requestedEngine: requestedSttEngine(settings), activeEngine: null, model: null, phase: 'off', detail: null },
-    llm: { provider, requestedModel: settings.models?.[provider]?.[tier] || null, activeModel: null, phase: 'idle', error: null },
+    llm: { provider, requestedModel: (provider === 'codex' && settings.codexSelection?.model) || settings.models?.[provider]?.[tier] || null, activeModel: null, phase: 'idle', error: null },
     transcript: { mic: { interim: '', final: '' }, system: { interim: '', final: '' } },
     request: { id: null, phase: 'idle', contextUsed: { screen: false, mic: false, system: false }, error: null },
     createdAt: now
@@ -133,7 +133,7 @@ function reduceSettingsUpdated(snapshot, settings = {}) {
     llm: {
       ...snapshot.llm,
       provider: requestActive ? snapshot.llm.provider : provider,
-      requestedModel: settings.models?.[provider]?.[tier] || null
+      requestedModel: (provider === 'codex' && settings.codexSelection?.model) || settings.models?.[provider]?.[tier] || null
     }
   });
 }

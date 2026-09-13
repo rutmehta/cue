@@ -31,6 +31,7 @@ function buildTrayTemplate(snapshot = {}, actions = {}) {
     { label: 'Unlock Interaction', click: action(actions, 'unlock') },
     { label: 'Recenter Overlay', click: action(actions, 'recenter') },
     { label: 'Settings', click: action(actions, 'settings') },
+    ...(typeof actions.checkForUpdates === 'function' ? [{ label: 'Check for Updates…', click: actions.checkForUpdates }] : []),
     { label: 'Quit Cue', click: action(actions, 'quit') }
   ];
 }
@@ -78,6 +79,7 @@ function createTrayController(dependencies = {}) {
       unlock: () => dispatch('unlock'),
       recenter: () => dispatch('recenter'),
       settings: () => dispatch('settings'),
+      checkForUpdates: dependencies.checkForUpdates,
       quit: () => dispatch('quit')
     });
     tray.setContextMenu(Menu.buildFromTemplate(template));

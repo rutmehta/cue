@@ -24,6 +24,7 @@
 
   // ---- state -------------------------------------------------------------
   let settings = null;
+  let codexModels = [];
   if (!localStorage.getItem('cue.readableSurfaceIntroduced')) {
     localStorage.setItem('cue.appearance', 'dark');
     localStorage.setItem('cue.surfaceOpacity', '95');
@@ -665,8 +666,19 @@
   // Smart toggle
   const smartBtn = $('#smart-toggle');
   $('#answer-model').addEventListener('change', async (event) => {
+    if (settings.provider === 'codex') {
+      settings.codexSelection = { model: event.target.value, effort: 'default' };
+      await cue.settingsSet({ codexSelection: settings.codexSelection });
+      updateSmartTooltip();
+      return;
+    }
     settings.smart = event.target.value === 'smart';
     await cue.settingsSet({ smart: settings.smart });
+    updateSmartTooltip();
+  });
+  $('#answer-effort').addEventListener('change', async (event) => {
+    settings.codexSelection = { model: $('#answer-model').value, effort: event.target.value };
+    await cue.settingsSet({ codexSelection: settings.codexSelection });
     updateSmartTooltip();
   });
   smartBtn.addEventListener('click', async () => {
@@ -1343,6 +1355,38 @@
     const btn = document.getElementById('smart-toggle');
     const picker = $('#answer-model');
     picker.replaceChildren();
+    const effortPicker = $('#answer-effort');
+    effortPicker.hidden = settings.provider !== 'codex';
+    if (settings.provider === 'codex') {
+      const selection = settings.codexSelection || { model: m[settings.smart ? 'smart' : 'fast'] || 'auto', effort: settings.smart ? 'default' : 'low' };
+      const defaultModel = codexModels.find(model => model.isDefault) || codexModels[0];
+      const selectedId = selection.model === 'auto' ? defaultModel?.id || 'auto' : selection.model;
+      const models = [...codexModels];
+      if (!models.some(model => model.id === selectedId)) models.unshift({ id: selectedId, name: selectedId === 'auto' ? 'Loading Codex models…' : `${selectedId} (unavailable)` });
+      for (const model of models) {
+        const option = document.createElement('option');
+        option.value = model.id; option.textContent = model.name || model.id;
+        picker.appendChild(option);
+      }
+      picker.value = selectedId;
+      picker.title = selectedId;
+      const selected = models.find(model => model.id === selectedId);
+      effortPicker.replaceChildren();
+      const efforts = (selected?.supportedReasoningEfforts || []).map(item => item.reasoningEffort);
+      for (const effort of ['default', ...efforts]) {
+        const option = document.createElement('option'); option.value = effort;
+        option.textContent = effort === 'default' ? `Reasoning: default${selected?.defaultReasoningEffort ? ` (${selected.defaultReasoningEffort})` : ''}` : `Reasoning: ${effort}`;
+        effortPicker.appendChild(option);
+      }
+      if (selection.effort && selection.effort !== 'default' && !efforts.includes(selection.effort)) {
+        const unavailable = document.createElement('option');
+        unavailable.value = selection.effort; unavailable.textContent = `Reasoning: ${selection.effort} (unavailable)`;
+        effortPicker.appendChild(unavailable);
+      }
+      effortPicker.value = selection.effort || 'default';
+      effortPicker.disabled = !efforts.length;
+      return;
+    }
     for (const [value, label] of [['fast', fast], ['smart', smart]]) {
       const option = document.createElement('option');
       option.value = value;
@@ -1417,6 +1461,7 @@
   });
 
   function updateCustomProviderFields() {
+    $('#legacy-model-settings').hidden = settings.provider === 'codex';
     $('#custom-endpoint-settings').classList.toggle('hidden', settings.provider !== 'custom');
     const codex = settings.provider === 'codex';
     $('#codex-settings').classList.toggle('hidden', !codex);
@@ -1431,6 +1476,16 @@
     $('#codex-status').textContent = 'Checking Codex connection…';
     try {
       const result = await cue.codexStatus();
+      codexModels = result.models || [];
+      if (settings.provider === 'codex' && codexModels.length && !settings.codexSelection) {
+        const legacy = settings.models.codex?.[settings.smart ? 'smart' : 'fast'];
+        const selected = legacy && legacy !== 'auto' ? codexModels.find(model => model.id === legacy) : codexModels.find(model => model.isDefault) || codexModels[0];
+        if (selected) {
+          settings.codexSelection = { model: selected.id, effort: !settings.smart && selected.supportedReasoningEfforts?.some(item => item.reasoningEffort === 'low') ? 'low' : 'default' };
+          await cue.settingsSet({ codexSelection: settings.codexSelection });
+        }
+      }
+      updateSmartTooltip();
       $('#codex-status').textContent = result.connected
         ? `Connected with ChatGPT${result.plan ? ' · ' + result.plan : ''}. Uses your Codex allowance.`
         : result.error || 'Not connected. Sign in with ChatGPT to use your subscription.';
@@ -1944,6 +1999,7 @@
     updatePrepStatus();
     // R6: smart tooltip
     updateSmartTooltip();
+    if (settings.provider === 'codex') void refreshCodexConnection();
     // Fix 3: Adjust permission buttons based on actual Windows version.
     // ms-settings:privacy-screenrecorder only exists on Windows 11.
     // On Windows 10, screen capture needs no permission — so replace the button

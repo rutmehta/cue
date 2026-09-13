@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   release:
+    # This fork publishes verified macOS assets and the signed Sparkle feed
+    # together using scripts/release-mac.js; tag CI must not race that release.
+    if: github.repository != 'rutmehta/cue'
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:

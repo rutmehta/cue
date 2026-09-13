@@ -19,6 +19,7 @@ const { IPC_EVENTS, IPC_INVOKES, IPC_SENDS } = require('./src/ipc-contract');
 const { createLifecycleCoordinator, decideWindowClose } = require('./src/lifecycle');
 const { SessionController } = require('./src/session-controller');
 const { createTrayController } = require('./src/tray-menu');
+const { createUpdater } = require('./src/updater');
 const { resolveOverlayBounds, storeBoundsForDisplay, storeOverlayBoundsState } = require('./src/window-state');
 const { isOverlaySender, parseSourceUpdatePayload } = require('./src/source-update');
 const { batchStatusForResult, createBatchAttemptGate, createStreamingCallbackGate } = require('./src/stt-status-gate');
@@ -31,18 +32,21 @@ const { WhisperEngine } = require('./src/whisper-engine');
 const { DEFAULTS, replaceGlobalShortcut } = require('./src/shortcuts');
 const { createVisibilityLatch } = require('./src/visibility-latch');
 
-// macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
-// start on Electron 31–38 unless these Chromium features are enabled; without
-// them getDisplayMedia rejects with "Error starting capture" and meeting audio
-// silently never works. Electron 39+ wires this up itself, where this is a
-// harmless no-op. Must run before app is ready.
+// Electron 44 / Chromium 152 can cancel speaker playback from other apps,
+// not just audio rendered by Cue. Use the macOS system-loopback AEC reference
+// for our echoCancellation:true mic stream (macOS 14.2+). Chromium retains
+// its normal fallback on unsupported systems. This is audio processing, not
+// transcript deduplication: independent/overlapping speech stays in the mic.
+// Must run before app is ready. Electron now enables display-media loopback
+// itself; the old ScreenCaptureKit override is no longer needed.
 if (process.platform === 'darwin') {
-  app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride');
+  app.commandLine.appendSwitch('enable-features', 'SystemLoopbackAsAecReference:forced_on/true');
 }
 const { WhisperModelManager } = require('./src/whisper-model-manager');
 const { requireWhisperModel } = require('./src/whisper-model-catalog');
 const { locateWhisperRuntime } = require('./src/whisper-runtime');
 
+const updater = createUpdater({ app, dialog });
 let win = null;
 let permWin = null;
 let sessionController = null;
@@ -1224,6 +1228,7 @@ async function createAppTray() {
       tooltip: isMac ? 'Cue — recover with ⌘←/→ · toggle ⌘\\' : 'Cue — show/hide',
       getSnapshot: getTraySnapshot,
       subscribe: (listener) => sessionController.subscribe(() => listener(getTraySnapshot())),
+      checkForUpdates: updater.supported ? () => updater.check() : undefined,
       command: (command) => lifecycleCoordinator?.command(command)
     });
     return true;
@@ -1372,6 +1377,21 @@ async function launchApp() {
 // -------- lifecycle --------
 app.whenReady().then(async () => {
   app.setName('Cue');
+  updater.start();
+  // Read-only release verification: exercise real Sparkle networking without
+  // opening capture windows or touching microphone permissions.
+  if (process.argv.includes('--cue-update-probe')) {
+    const deadline = Date.now() + 45000;
+    const timer = setInterval(() => {
+      const status = updater.status();
+      if (['available', 'up-to-date', 'error'].includes(status.state) || Date.now() > deadline) {
+        clearInterval(timer);
+        console.log('CUE_UPDATE_PROBE ' + JSON.stringify(status));
+        app.exit(['available', 'up-to-date'].includes(status.state) ? 0 : 1);
+      } else if (status.state === 'ready' && status.canCheck) updater.probe();
+    }, 100);
+    return;
+  }
   if (isWindows) process.title = 'Cue';
 
   if (isMac && !store.getSettings().permissionsDeferred) {

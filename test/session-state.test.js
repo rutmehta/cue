@@ -7,6 +7,14 @@ const {
   deriveSessionPhase
 } = require('../src/session-state');
 
+test('session model follows the explicit Codex selection on startup and changes', () => {
+  const settings = { provider: 'codex', codexSelection: { model: 'selected' }, models: { codex: { fast: 'legacy' } } };
+  const initial = createInitialSnapshot({ settings });
+  assert.equal(initial.llm.requestedModel, 'selected');
+  const next = reduceSession(initial, { type: 'SETTINGS_UPDATED', settings: { ...settings, codexSelection: { model: 'next' } } });
+  assert.equal(next.llm.requestedModel, 'next');
+});
+
 test('moves through start, degraded listening, pause, resume, and stop with revisions', () => {
   let state = createInitialSnapshot({ now: 1_000, settings: { sttProvider: 'local', localStt: { engine: 'auto' } } });
   state = reduceSession(state, { type: 'SESSION_START_REQUESTED', now: 2_000 });

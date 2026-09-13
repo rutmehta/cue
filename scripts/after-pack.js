@@ -13,6 +13,10 @@ const { prepareWhisperRuntime } = require('./prepare-whisper-runtime');
  * runs fine without the bundled runtime and simply does not offer it.
  */
 module.exports = async function afterPack(context) {
+  if (context.packager.platform.nodeName === 'darwin') {
+    const architecture = typeof context.arch === 'number' ? Arch[context.arch] : context.arch;
+    require('./prepare-sparkle').buildSparkleBridge(architecture, path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`));
+  }
   if (!process.env.CUE_BUNDLE_WHISPER) {
     console.log('[cue] Skipping the bundled whisper runtime (set CUE_BUNDLE_WHISPER=1 to include it).');
     return;

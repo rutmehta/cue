@@ -89,6 +89,7 @@
               <div id="composer-bottom">
                 <button id="smart-toggle" class="smart-pill hidden" tabindex="-1" aria-hidden="true"><span class="ic"></span><span>Smart</span></button>
                 <select id="answer-model" aria-label="Answer model"></select>
+                <select id="answer-effort" aria-label="Reasoning effort" hidden></select>
                 <span class="composer-hint">Enter to send</span>
                 <div class="spacer"></div>
                 <button id="send-btn" title="Send"></button>
@@ -192,9 +193,11 @@
         <label class="s-label">Azure endpoint <span class="s-hint">Azure OpenAI: https://&lt;resource&gt;.openai.azure.com/openai · AI Foundry: https://&lt;host&gt;.cognitiveservices.azure.com (cue adds /openai/v1)</span></label>
         <div class="s-field"><span>Endpoint</span><input id="azure-endpoint" type="text" placeholder="https://host.cognitiveservices.azure.com" autocomplete="off" /></div>
 
+        <div id="legacy-model-settings">
         <label class="s-label">Models <span class="s-hint">fast = Smart off · smart = Smart on</span></label>
         <div class="s-field"><span>Fast</span><input id="model-fast" type="text" autocomplete="off" /></div>
         <div class="s-field"><span>Smart</span><input id="model-smart" type="text" autocomplete="off" /></div>
+        </div>
 
         <label class="s-label">Assistant access <span class="s-hint">programs allowed to see what cue is doing</span></label>
         <div class="s-callers" id="applink-callers"></div>

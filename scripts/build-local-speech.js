@@ -14,8 +14,10 @@ const destination = path.join(root, 'native/bin');
 fs.mkdirSync(destination, { recursive: true });
 fs.copyFileSync(path.join(buildPath, 'cue-local-speech'), path.join(destination, 'cue-local-speech'));
 fs.chmodSync(path.join(destination, 'cue-local-speech'), 0o755);
+fs.rmSync(path.join(destination, 'FluidAudio-LICENSE'), { force: true });
 fs.copyFileSync(path.join(packagePath, '.build/checkouts/FluidAudio/LICENSE'), path.join(destination, 'FluidAudio-LICENSE'));
 for (const name of fs.readdirSync(buildPath).filter(name => name.endsWith('.bundle'))) {
+  fs.rmSync(path.join(destination, name), { recursive: true, force: true });
   fs.cpSync(path.join(buildPath, name), path.join(destination, name), { recursive: true });
 }
 console.log('Native local speech helper is ready.');

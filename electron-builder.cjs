@@ -18,6 +18,7 @@
 // Gated on an explicit flag rather than on CSC_LINK: a bare .p12 carries only
 // the leaf certificate, and signing with an incomplete chain fails in a way
 // that looks like a wrong password.
+const sparkle = require("./build-resources/sparkle.json");
 const hasCert = process.env.MAC_SIGN === "1";
 const canNotarize =
   hasCert &&
@@ -56,6 +57,13 @@ module.exports = {
     notarize: canNotarize,
     extendInfo: {
       LSUIElement: true,
+      SUFeedURL: sparkle.feedURL,
+      SUPublicEDKey: sparkle.publicKey,
+      SUEnableAutomaticChecks: true,
+      SUAutomaticallyUpdate: false,
+      SUVerifyUpdateBeforeExtraction: true,
+      SURequireSignedFeed: true,
+      SUSendProfileInfo: false,
       NSMicrophoneUsageDescription:
         "cue transcribes your microphone so it can help you in conversations.",
       NSCameraUsageDescription: "cue does not use the camera.",

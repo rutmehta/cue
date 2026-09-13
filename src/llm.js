@@ -296,11 +296,11 @@ async function streamOllama({ apiKey, model, system, turns, imageDataUrl, maxTok
 function createLLM(settings) {
   const provider = settings.provider;
   if (provider === 'codex') {
-    const model = settings.models?.codex?.[settings.smart ? 'smart' : 'fast'] || 'auto';
+    const model = settings.codexSelection?.model || settings.models?.codex?.[settings.smart ? 'smart' : 'fast'] || 'auto';
     const { CodexProvider } = require('./codex-provider');
     const codex = new CodexProvider();
     return { provider, model, ready: true, configurationError: '', stream: params => {
-      return codex.stream({ ...params, model, smart: !!settings.smart });
+      return codex.stream({ ...params, model, effort: settings.codexSelection?.effort, smart: !!settings.smart });
     }, cancel: () => codex.close() };
   }
   const keys = settings.apiKeys || {};

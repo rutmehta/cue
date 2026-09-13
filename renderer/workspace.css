@@ -91,6 +91,8 @@ body[data-appearance="dark"] #app, body[data-appearance="dark"] #settings {
 #smart-toggle::after { content: '⌄'; margin-left: 3px; }
 .composer-hint { margin-left: auto; font-size: 10px; color: var(--muted); }
 #answer-model { min-width: 0; max-width: 65%; color: var(--muted); border: none; background: transparent; font: 500 11px var(--font); cursor: pointer; outline-offset: 3px; }
+#answer-effort { min-width: 0; max-width: 30%; color: var(--muted); border: none; background: transparent; font: 500 11px var(--font); cursor: pointer; }
+#answer-effort[hidden] { display: none; }
 #composer-bottom .spacer { display: none; }
 #send-btn, #send-btn.has-text:not(.ready), #send-btn.ready { flex-shrink: 0; width: 28px; height: 28px; border-radius: 6px; background: var(--ink); color: var(--surface); box-shadow: none; }
 #prep-status { display: none; }
