@@ -27,7 +27,11 @@ function signApp(appPath) {
     if (stat.isSymbolicLink()) return;
     const sparkle = file.includes('/Sparkle.framework');
     if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(file)) walk(path.join(file, name));
+      // Sign nested helper directories before a framework's main executable.
+      // codesign validates the enclosing framework even when given that binary.
+      const names = fs.readdirSync(file).sort((a, b) =>
+        Number(fs.lstatSync(path.join(file, b)).isDirectory()) - Number(fs.lstatSync(path.join(file, a)).isDirectory()));
+      for (const name of names) walk(path.join(file, name));
       if (/\.(app|framework|xpc)$/.test(file)) sign(file, sparkle);
     } else if (stat.isFile() && stat.size >= 4) {
       const fd = fs.openSync(file, 'r');
