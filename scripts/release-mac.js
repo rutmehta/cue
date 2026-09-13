@@ -77,7 +77,7 @@ async function main() {
     run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, archive]);
     fs.copyFileSync(path.join(root, 'docs/releases', `${pkg.version}.html`), archive.replace(/\.zip$/, '.html'));
   }
-  run(path.join(sparkle, 'bin/generate_appcast'), ['--account', config.keychainAccount, '--download-url-prefix', `https://github.com/rutmehta/cue/releases/download/v${pkg.version}/`, '--maximum-deltas', '0', '--embed-release-notes', releaseDir]);
+  require('./generate-appcast').generateAppcast(releaseDir, sparkle);
   const archives = fs.readdirSync(releaseDir).filter(name => name.endsWith('.zip'));
   fs.writeFileSync(path.join(releaseDir, 'SHA256SUMS'), archives.map(name => `${crypto.createHash('sha256').update(fs.readFileSync(path.join(releaseDir, name))).digest('hex')}  ${name}\n`).join(''));
   console.log(`Verified release ready: ${releaseDir}`);
