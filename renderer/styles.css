@@ -986,7 +986,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .text-size-btn { flex-shrink: 0; color: var(--tx-1); background: transparent; border: 0; border-radius: 6px; min-height: 30px; padding: 4px; cursor: pointer; }
 .text-size-btn:hover { background: #363940; }
 .text-size-btn:disabled { opacity: .4; }
-.compact .response-group:not(:last-child) { display: none; }
+/* Compact controls must not hide conversation history. */
 @media (max-height: 430px) {
   #panel { max-height: none; padding: 8px 12px; }
   #action-row { padding: 4px 0; }
