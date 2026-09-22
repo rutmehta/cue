@@ -3,31 +3,58 @@
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
-  <title>cue</title>
+  <title>Cue</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
 </head>
-<body>
+<body data-appearance="dark">
   <div id="app">
     <!-- Dedicated drag handle / top bar -->
     <div id="toolbar" class="drag-handle">
-      <div class="drag-pill" title="Drag to move window">
+      <div class="drag-pill" title="Drag anywhere on this bar to move Cue">
         <span class="drag-dots" aria-hidden="true"></span>
-        <span class="drag-label">Drag</span>
+        <span class="drag-label">Cue</span>
       </div>
-      <button class="tb-logo" id="logo-btn" title="cue"></button>
-      <div class="tb-divider"></div>
-      <button class="tb-hide" id="hide-btn"><span class="chev"></span><span>Hide</span></button>
-      <div class="tb-divider"></div>
-      <button class="tb-stop" id="stop-btn" title="Start / stop listening"></button>
-      <div class="tb-divider"></div>
-      <button class="tb-quit" id="quit-btn" title="Quit cue (⌘⇧X)"></button>
+      <button class="tb-logo" id="logo-btn" title="Cue" aria-label="Open Cue guide"></button>
+      <button class="tb-stop" id="stop-btn" title="Start listening" aria-label="Start listening"><span id="session-action-label">Start</span></button>
+      <button class="tb-end hidden" id="end-btn" title="End session" aria-label="End session">End</button>
+      <button class="tb-hide" id="hide-btn" aria-label="Hide Cue" title="Hide or bring back Cue"><span class="chev"></span><span>Hide</span></button>
+      <details id="window-menu">
+        <summary aria-label="Window options" title="Window options">···</summary>
+        <div class="window-options">
+          <button id="menu-hide-btn">Hide / show <span id="toggle-shortcut-label"></span></button>
+          <button id="more-btn" title="Settings">Settings</button>
+          <button id="camera-center-btn">Center near webcam</button>
+          <button id="screen-context-btn" aria-pressed="true">Screen context on</button>
+          <label class="opacity-control">Background <input id="overlay-opacity" type="range" min="30" max="95" value="95" aria-label="Overlay background opacity" /></label>
+          <button id="menu-suggest-btn">Suggest answer</button>
+          <button id="menu-solve-btn">Solve code on screen</button>
+          <button id="menu-recap-btn">Recap conversation</button>
+          <button id="compact-btn" title="Toggle compact view" aria-pressed="false">Compact</button>
+          <button id="appearance-btn">Dark appearance</button>
+          <div class="text-controls"><span>Answer size</span><button id="text-smaller-btn" class="text-size-btn" aria-label="Smaller answer text">A−</button><button id="text-larger-btn" class="text-size-btn" aria-label="Larger answer text">A+</button></div>
+          <button id="new-chat-btn" title="New chat (⌘N)" aria-label="Start a new chat"><span class="ic"></span><span>New conversation</span></button>
+          <button class="tb-quit" id="quit-btn" title="Quit Cue (⌘⇧X)" aria-label="Quit Cue">Quit</button>
+        </div>
+      </details>
     </div>
 
     <!-- Main assistant panel -->
     <div id="panel-wrap">
       <span id="live-dot" class="off"></span>
       <div id="stt-status" class="stt-status stt-disconnected" title="STT connection status">off</div>
+      <div id="signal-strip" aria-live="polite">
+        <div class="signal-primary"><span id="signal-dot"></span><span id="session-status-label">Not listening</span></div>
+        <div class="signal-source" id="mic-signal">Mic <strong>Off</strong></div>
+        <div class="signal-source" id="system-signal">Meeting <strong>Off</strong></div>
+        <div class="signal-engine" id="engine-signal">LOCAL · AUTO</div>
+      </div>
       <div id="panel" class="glass no-drag">
+        <div class="view-bar" role="tablist" aria-label="Conversation view">
+          <button id="answer-tab" role="tab" aria-selected="true" aria-controls="messages">Answer</button>
+          <button id="history-btn" role="tab" aria-selected="false" aria-controls="transcript-sidebar" title="View conversation transcript">Transcript</button>
+          <span id="context-note" title="A fresh screenshot is used when you request an answer">Screen on request</span>
+        </div>
 
         <!-- Two-column layout: responses (left) + live transcript sidebar (right) -->
         <div id="panel-columns">
@@ -39,13 +66,13 @@
             <div id="action-row">
               <button class="act act-primary" data-mode="say"
                 title="Suggests what to say next based on the conversation">
-                <span class="ic"></span><span>What should I say?</span>
+                <span class="ic"></span><span>Suggest answer</span>
                 <span class="shortcut-hint" id="say-shortcut-hint"></span>
               </button>
               <span class="sep">•</span>
               <button class="act act-secondary" data-mode="assist"
                 title="Scans your screen and conversation to decide what you need">
-                <span class="ic"></span><span>Assist</span>
+                <span class="ic"></span><span>Use screen</span>
                 <span class="shortcut-hint" id="assist-shortcut-hint"></span>
               </button>
               <span class="sep">•</span>
@@ -56,13 +83,14 @@
 
             <div id="composer">
               <div id="input-area">
-                <div id="placeholder">Ask about your screen or conversation, or <span class="keycap">⌘</span><span class="keycap">⏎</span> for Assist</div>
-                <textarea id="input" rows="1" spellcheck="false"></textarea>
+                <div id="placeholder">Ask about the conversation…</div>
+                <textarea id="input" rows="1" spellcheck="false" aria-label="Your question"></textarea>
               </div>
               <div id="composer-bottom">
-                <button id="smart-toggle" class="smart-pill"><span class="ic"></span><span>Smart</span></button>
-                <button id="history-btn" class="history-btn" title="View conversation history"><span class="ic"></span></button>
-                <button id="more-btn" class="more-btn" title="Settings"></button>
+                <button id="smart-toggle" class="smart-pill hidden" tabindex="-1" aria-hidden="true"><span class="ic"></span><span>Smart</span></button>
+                <select id="answer-model" aria-label="Answer model"></select>
+                <select id="answer-effort" aria-label="Reasoning effort" hidden></select>
+                <span class="composer-hint">Enter to send</span>
                 <div class="spacer"></div>
                 <button id="send-btn" title="Send"></button>
               </div>
@@ -83,13 +111,15 @@
     <!-- Transcript history sidebar — floats OUTSIDE main panel, toggled by history button -->
     <div id="transcript-sidebar" class="transcript-sidebar hidden">
       <div class="ts-header">
-        <span class="ts-title">Conversation History</span>
+        <span class="ts-title">Live conversation</span>
         <button class="ts-close-btn" id="close-sidebar-btn" title="Close history">✕</button>
       </div>
       <div id="ts-list" class="ts-list">
         <div class="ts-placeholder">Conversation history will appear here when listening.</div>
       </div>
       <div class="ts-footer">
+        <button class="ts-clear-btn" id="jump-live-btn">Jump to live</button>
+        <button class="ts-clear-btn" id="use-question-btn">Use latest question</button>
         <button class="ts-clear-btn" id="clear-transcript-btn" title="Clear all history">Clear History</button>
       </div>
     </div>
@@ -105,18 +135,19 @@
 
       <!-- Tab bar -->
       <div class="s-tabs">
-        <button class="s-tab on" data-tab="keys">🔑 Keys</button>
+        <button class="s-tab on" data-tab="keys">Models</button>
         <button class="s-tab" data-tab="transcription">Audio</button>
-        <button class="s-tab" data-tab="profile">📄 Profile</button>
-        <button class="s-tab" data-tab="prep">🎯 Interview Prep</button>
-        <button class="s-tab" data-tab="style">✨ Style</button>
-        <button class="s-tab" data-tab="qa">💬 Q&amp;A</button>
+        <button class="s-tab" data-tab="profile">Profile</button>
+        <button class="s-tab" data-tab="prep">Preparation</button>
+        <button class="s-tab" data-tab="style">Writing</button>
+        <button class="s-tab" data-tab="qa">Q&amp;A</button>
       </div>
 
       <!-- Tab: Keys -->
       <div class="s-body s-tab-pane" data-pane="keys">
         <label class="s-label">Provider</label>
-        <div class="s-seg" id="provider-seg">
+        <div class="s-seg s-seg-wrap" id="provider-seg">
+          <button data-provider="codex">Codex subscription</button>
           <button data-provider="openai">OpenAI</button>
           <button data-provider="anthropic">Anthropic</button>
           <button data-provider="gemini">Gemini</button>
@@ -127,7 +158,16 @@
           <button data-provider="azure">Azure AI</button>
         </div>
 
-        <label class="s-label">API keys &amp; URLs <span class="s-hint">stored locally · never sent to any server</span></label>
+        <div id="codex-settings" class="hidden">
+          <label class="s-label">ChatGPT sign-in</label>
+          <p id="codex-status" role="status">Checking Codex connection…</p>
+          <button id="codex-login-btn" class="s-btn">Sign in with ChatGPT</button>
+          <button id="codex-refresh-btn" class="s-btn">Refresh connection</button>
+          <p class="s-hint">Uses your Codex subscription allowance. No API-key billing or automatic paid fallback. Transcription stays local. Leave models on auto to use your account default.</p>
+          <datalist id="codex-models"></datalist>
+        </div>
+
+        <label class="s-label">API keys &amp; URLs <span class="s-hint">stored locally · sent only to the selected provider</span></label>
         <div class="s-field"><span>OpenAI</span><input id="key-openai" type="password" placeholder="sk-..." autocomplete="off" /></div>
         <div class="s-field"><span>Anthropic</span><input id="key-anthropic" type="password" placeholder="sk-ant-..." autocomplete="off" /></div>
         <div class="s-field"><span>Gemini</span><input id="key-gemini" type="password" placeholder="AIza..." autocomplete="off" /></div>
@@ -153,12 +193,26 @@
         <label class="s-label">Azure endpoint <span class="s-hint">Azure OpenAI: https://&lt;resource&gt;.openai.azure.com/openai · AI Foundry: https://&lt;host&gt;.cognitiveservices.azure.com (cue adds /openai/v1)</span></label>
         <div class="s-field"><span>Endpoint</span><input id="azure-endpoint" type="text" placeholder="https://host.cognitiveservices.azure.com" autocomplete="off" /></div>
 
+        <div id="legacy-model-settings">
         <label class="s-label">Models <span class="s-hint">fast = Smart off · smart = Smart on</span></label>
         <div class="s-field"><span>Fast</span><input id="model-fast" type="text" autocomplete="off" /></div>
         <div class="s-field"><span>Smart</span><input id="model-smart" type="text" autocomplete="off" /></div>
+        </div>
 
         <label class="s-label">Assistant access <span class="s-hint">programs allowed to see what cue is doing</span></label>
         <div class="s-callers" id="applink-callers"></div>
+
+        <label class="s-label">Global keyboard controls</label>
+        <div class="s-field"><span>Hide / show</span><input id="hide-shortcut" type="text" autocomplete="off" aria-label="Hide or show keyboard shortcut" /></div>
+        <p class="s-hint">Use modifier names joined by +. The default is CommandOrControl+. (Command + period on Mac). Choose a combination not used by your other apps.</p>
+        <div class="shortcut-grid" aria-label="Cue keyboard shortcuts">
+          <span>Show / hide</span><kbd id="settings-toggle-shortcut"></kbd>
+          <span>Move / recover overlay</span><kbd>⌘ ← / →</kbd>
+          <span>Ask about context</span><kbd>⌘ ↵</kbd>
+          <span>What should I say?</span><kbd>⌘ ⇧ ↵</kbd>
+          <span>Start / pause listening</span><kbd>⌘ ⇧ L</kbd>
+          <span>Clear conversation</span><kbd>⌘ R</kbd>
+        </div>
 
         <div class="s-status" id="s-status"></div>
       </div>
@@ -173,9 +227,17 @@
           <button data-stt-provider="openai">OpenAI</button>
           <button data-stt-provider="gemini">Gemini</button>
         </div>
-        <div class="s-note">Local mode keeps microphone and meeting audio on this computer. It never silently falls back to a cloud transcription provider.</div>
+        <div class="s-note">Local transcription is free and keeps audio on this Mac. Parakeet reuses the model downloaded by SpeakType. Local mode never falls back to paid transcription. AI answers use your separately selected model.</div>
 
-        <div class="whisper-card">
+        <label class="s-label">Local engine <span class="s-hint">Auto picks the fastest healthy installed engine</span></label>
+        <div class="s-seg" id="local-engine-seg">
+          <button data-local-engine="auto">Auto · fastest</button>
+          <button data-local-engine="parakeet">Parakeet</button>
+          <button data-local-engine="whisper">Whisper</button>
+        </div>
+
+        <div id="native-model-status" class="s-note" role="status">Checking the installed local model…</div>
+        <div class="whisper-card" id="whisper-options">
           <div class="whisper-runtime-row">
             <span class="s-label">whisper.cpp runtime</span>
             <span id="whisper-runtime-status" class="whisper-badge">Checking…</span>
@@ -301,6 +363,10 @@
   </div>
 
   <script src="icons.js"></script>
+  <script src="capture-lifecycle.js"></script>
+  <script src="audio-utils.js"></script>
+  <script src="audio-capture.js"></script>
+  <script src="answer-fit.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

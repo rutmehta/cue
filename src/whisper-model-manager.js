@@ -23,6 +23,7 @@ class WhisperModelManager {
     this.models = Object.freeze(Array.from(models));
     this.modelById = new Map(this.models.map((model) => [model.id, model]));
     this.activeDownload = null;
+    this.verificationCache = new Map();
   }
 
   getModelPath(modelId) {
@@ -33,20 +34,29 @@ class WhisperModelManager {
     return `${this.getModelPath(modelId)}.part`;
   }
 
-  async listModels() {
+  async listModels({ verify = false } = {}) {
     await fs.promises.mkdir(this.modelDirectory, { recursive: true });
     return Promise.all(this.models.map(async (model) => {
       const [installedBytes, partialBytes] = await Promise.all([
         this._getFileSize(this.getModelPath(model.id)),
         this._getFileSize(this.getPartialPath(model.id))
       ]);
-      return {
+      const result = {
         ...model,
         installed: installedBytes === model.bytes,
         installedBytes,
         partialBytes,
         downloading: this.activeDownload?.modelId === model.id
       };
+      if (!verify) return result;
+      if (installedBytes === 0) return { ...result, installed: false, status: 'missing' };
+      if (installedBytes !== model.bytes) return { ...result, installed: false, status: 'corrupt' };
+      try {
+        await this.verifyInstalledModel(model.id);
+        return { ...result, installed: true, status: 'ready' };
+      } catch {
+        return { ...result, installed: false, status: 'corrupt' };
+      }
     }));
   }
 
@@ -168,9 +178,32 @@ class WhisperModelManager {
   async verifyInstalledModel(modelId) {
     const model = this._requireModel(modelId);
     const modelPath = this.getModelPath(modelId);
-    await fs.promises.access(modelPath, fs.constants.R_OK);
-    await this._verifyArtifact(modelPath, model);
-    return modelPath;
+    const metadata = await fs.promises.stat(modelPath);
+    const cacheKey = `${metadata.size}:${metadata.mtimeMs}`;
+    const cached = this.verificationCache.get(modelPath);
+    if (cached?.key === cacheKey) return cached.promise;
+
+    const verification = (async () => {
+      try {
+        await fs.promises.access(modelPath, fs.constants.R_OK);
+        await this._verifyArtifact(modelPath, model);
+        return modelPath;
+      } catch (error) {
+        if (error?.code === 'ARTIFACT_CHECKSUM_MISMATCH') {
+          const mismatch = new Error(`Model checksum mismatch for ${model.id}.`);
+          mismatch.code = 'MODEL_CHECKSUM_MISMATCH';
+          throw mismatch;
+        }
+        throw error;
+      }
+    })();
+    this.verificationCache.set(modelPath, { key: cacheKey, promise: verification });
+    verification.catch(() => {
+      if (this.verificationCache.get(modelPath)?.promise === verification) {
+        this.verificationCache.delete(modelPath);
+      }
+    });
+    return verification;
   }
 
   // Time O(n), space O(1): audio models can be several GB, so hash by stream.

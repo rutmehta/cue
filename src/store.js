@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const { normalizeBaseUrl } = require('./openai-compatible');
+const { DEFAULTS: SHORTCUTS } = require('./shortcuts');
 
 const FILE = path.join(app.getPath('userData'), 'cue-data.json');
 
@@ -12,7 +13,13 @@ const MAX_AI_RULES_CHARS = 2000;
 
 const DEFAULTS = {
   provider: 'openai',
-  sttProvider: 'auto',
+  shortcuts: { toggle: SHORTCUTS.toggle },
+  screenContextEnabled: true,
+  sttProvider: 'local',
+  localStt: {
+    engine: 'auto',
+    benchmark: null
+  },
   localWhisper: {
     modelId: 'base.en',
     language: 'auto',
@@ -43,6 +50,7 @@ const DEFAULTS = {
   windowX: null,
   windowY: null,
   models: {
+    codex: { fast: 'auto', smart: 'auto' },
     openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
     anthropic: { fast: 'claude-3-5-haiku-latest', smart: 'claude-3-5-sonnet-latest' },
     // Kept in sync with CURRENT_GEMINI_DEFAULT in src/llm.js — gemini-2.0-flash

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MODES } = require('../src/prompts');
+const { MODES, buildFeaturePrompt, buildFeatureRequest } = require('../src/prompts');
 
 test('assist mode gives a direct answer in first person', () => {
   const system = MODES.assist.buildSystem(null);
@@ -63,4 +63,98 @@ test('leetcode mode never applies AI rules (coding answers stay strict)', () => 
   assert.ok(!withRules.includes('USER RULES'), 'leetcode must not include USER RULES');
   assert.ok(!withRules.includes(RULES), 'leetcode must not leak user rules into the prompt');
   assert.match(withRules, /competitive programmer/);
+});
+
+test('context attribution is derived from only transcript turns actually included', () => {
+  const turns = [
+    { channel: 'you', text: 'excluded microphone turn' },
+    ...Array.from({ length: 16 }, (_value, index) => ({ channel: 'them', text: `recent system turn ${index}` }))
+  ];
+  const result = buildFeaturePrompt('say', { transcript: turns, userText: '' }, { screenIncluded: true });
+
+  assert.equal(result.text.includes('excluded microphone turn'), false);
+  assert.deepEqual(result.contextUsed, { screen: false, mic: false, system: true });
+});
+
+test('leetcode attributes only a successfully included screenshot', () => {
+  const transcript = [{ channel: 'you', text: 'mic' }, { channel: 'them', text: 'system' }];
+  assert.deepEqual(
+    buildFeaturePrompt('leetcode', { transcript, userText: '' }, { screenIncluded: true }).contextUsed,
+    { screen: true, mic: false, system: false }
+  );
+  assert.deepEqual(
+    buildFeaturePrompt('leetcode', { transcript, userText: '' }, { screenIncluded: false }).contextUsed,
+    { screen: false, mic: false, system: false }
+  );
+});
+
+test('one bounded transcript plan drives both category system context and user prompt attribution', () => {
+  const transcript = [
+    { channel: 'them', text: 'What are your salary expectations?' },
+    ...Array.from({ length: 16 }, (_value, index) => ({ channel: 'you', text: `recent answer ${index}` }))
+  ];
+  const request = buildFeatureRequest('say', {
+    transcript,
+    userText: '',
+    settings: { salaryTarget: '$180k-$200k' },
+    screenIncluded: false
+  });
+
+  assert.equal(request.system.includes('$180k-$200k'), false);
+  assert.equal(request.text.includes('salary expectations'), false);
+  assert.deepEqual(request.contextUsed, { screen: false, mic: true, system: false });
+});
+
+test('filters invalid and empty transcript values before rendering and attribution', () => {
+  const request = buildFeatureRequest('recap', {
+    transcript: [
+      { channel: 'them', text: null },
+      { channel: 'them', text: undefined },
+      { channel: 'them', text: false },
+      { channel: 'them', text: '   ' },
+      { channel: 'screen', text: 'injected' },
+      { channel: 'you', text: '  real answer  ' }
+    ],
+    settings: {},
+    screenIncluded: false
+  });
+
+  assert.match(request.text, /You: real answer/);
+  assert.doesNotMatch(request.text, /null|undefined|false|injected/);
+  assert.deepEqual(request.contextUsed, { screen: false, mic: true, system: false });
+});
+
+test('Answer This categorizes its selected question without attributing unrelated transcript', () => {
+  const cases = [
+    {
+      question: 'What are your salary expectations?',
+      category: 'compensation',
+      settings: { salaryTarget: '$180k-$200k' },
+      marker: '$180k-$200k'
+    },
+    {
+      question: 'Why do you want this role?',
+      category: 'motivation',
+      settings: { whyCompany: 'The infrastructure mission is a strong fit.' },
+      marker: 'infrastructure mission'
+    },
+    {
+      question: 'Tell me about a time you handled a difficult deadline.',
+      category: 'behavioral',
+      settings: { starStories: 'Migrated the deployment pipeline and cut release time by 40%.' },
+      marker: 'cut release time by 40%'
+    }
+  ];
+
+  for (const example of cases) {
+    const request = buildFeatureRequest('answerThis', {
+      transcript: [{ channel: 'you', text: 'unrelated answer' }, { channel: 'them', text: 'unrelated question' }],
+      userText: example.question,
+      settings: example.settings,
+      screenIncluded: false
+    });
+    assert.equal(request.category, example.category);
+    assert.match(request.system, new RegExp(example.marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.deepEqual(request.contextUsed, { screen: false, mic: false, system: false });
+  }
 });

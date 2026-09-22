@@ -18,6 +18,7 @@
 // Gated on an explicit flag rather than on CSC_LINK: a bare .p12 carries only
 // the leaf certificate, and signing with an incomplete chain fails in a way
 // that looks like a wrong password.
+const sparkle = require("./build-resources/sparkle.json");
 const hasCert = process.env.MAC_SIGN === "1";
 const canNotarize =
   hasCert &&
@@ -28,17 +29,19 @@ const canNotarize =
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: "com.cue.overlay",
-  productName: "cue",
+  productName: "Cue",
+  executableName: "cue",
   asar: false,
   publish: null,
   artifactName: "${productName}-${version}-${os}-${arch}.${ext}",
   // An allowlist, so anything new has to be added here or it simply is not in
   // the shipped app — and the only symptom is a require() that throws at
   // launch, in a build that ran fine from source.
-  files: ["main.js", "preload.js", "src/**/*", "renderer/**/*", "vendor/**/*"],
+  files: ["main.js", "preload.js", "src/**/*", "renderer/**/*", "vendor/**/*", "native/bin/**/*"],
   directories: { buildResources: "build-resources" },
   afterPack: "scripts/after-pack.js",
   mac: {
+    icon: "icon.svg",
     target: [{ target: "zip", arch: ["x64", "arm64"] }],
     category: "public.app-category.productivity",
     // With a real cert, let electron-builder discover it and apply the hardened
@@ -54,6 +57,13 @@ module.exports = {
     notarize: canNotarize,
     extendInfo: {
       LSUIElement: true,
+      SUFeedURL: sparkle.feedURL,
+      SUPublicEDKey: sparkle.publicKey,
+      SUEnableAutomaticChecks: true,
+      SUAutomaticallyUpdate: false,
+      SUVerifyUpdateBeforeExtraction: true,
+      SURequireSignedFeed: true,
+      SUSendProfileInfo: false,
       NSMicrophoneUsageDescription:
         "cue transcribes your microphone so it can help you in conversations.",
       NSCameraUsageDescription: "cue does not use the camera.",
@@ -62,6 +72,7 @@ module.exports = {
     },
   },
   win: {
+    icon: "icon.svg",
     target: [{ target: "nsis", arch: ["x64"] }],
     artifactName: "${productName}-win-${arch}.${ext}",
   },
@@ -74,6 +85,7 @@ module.exports = {
     shortcutName: "cue",
   },
   linux: {
+    icon: "icon.svg",
     target: [{ target: "AppImage", arch: ["x64", "arm64"] }],
     category: "Utility",
   },

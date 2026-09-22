@@ -24,14 +24,18 @@ class LocalWhisperTranscriber {
     this.onStatus = onStatus;
     this.onError = onError;
     this.segmenters = new Map();
-    this.queueTail = Promise.resolve();
-    this.pendingJobs = 0;
+    this.queueState = this._createQueueState(0);
+    this.queueTail = this.queueState.tail;
+    this.pendingJobs = this.queueState.pendingJobs;
     this.acceptingAudio = false;
-    this.discardPendingJobs = false;
+    this.jobGeneration = 0;
   }
 
   async start() {
-    this.discardPendingJobs = false;
+    this.jobGeneration += 1;
+    this.queueState = this._createQueueState(this.jobGeneration);
+    this.queueTail = this.queueState.tail;
+    this.pendingJobs = this.queueState.pendingJobs;
     await this.session.start();
     for (const channel of CHANNELS) {
       const isRemoteAudio = channel === 'them';
@@ -51,8 +55,14 @@ class LocalWhisperTranscriber {
     this.acceptingAudio = true;
   }
 
-  push(channel, pcm) {
+  push(channel, pcm, requestId) {
     if (!this.acceptingAudio) return;
+    if (requestId !== undefined) {
+      if (!CHANNELS.includes(channel)) throw new Error(`Unknown local Whisper channel: ${channel}`);
+      if (typeof requestId !== 'string' || !requestId) throw new Error('A direct local Whisper request requires a non-empty request id.');
+      this._enqueue(channel, Buffer.from(pcm), requestId);
+      return;
+    }
     const segmenter = this.segmenters.get(channel);
     if (!segmenter) throw new Error(`Unknown local Whisper channel: ${channel}`);
     segmenter.push(pcm);
@@ -62,9 +72,11 @@ class LocalWhisperTranscriber {
     this.acceptingAudio = false;
     for (const segmenter of this.segmenters.values()) segmenter.stop();
 
-    const drained = await this._drainQueue();
+    const stoppingQueue = this.queueState;
+    const drained = await this._drainQueue(stoppingQueue);
     if (!drained) {
-      this.discardPendingJobs = true;
+      stoppingQueue.abandoned = true;
+      this.jobGeneration += 1;
       this.session.abortInferences();
     }
     await this.session.stop({ force: !drained });
@@ -74,39 +86,51 @@ class LocalWhisperTranscriber {
 
   forceStop() {
     this.acceptingAudio = false;
-    this.discardPendingJobs = true;
+    this.queueState.abandoned = true;
+    this.jobGeneration += 1;
     this.session.abortInferences();
     return this.session.stop({ force: true });
   }
 
-  _enqueue(channel, pcm) {
-    this.pendingJobs += 1;
-    this.onStatus({ status: 'transcribing', channel, pending: this.pendingJobs });
+  _enqueue(channel, pcm, requestId = undefined) {
+    const generation = this.jobGeneration;
+    const queue = this.queueState;
+    queue.pendingJobs += 1;
+    this.pendingJobs = queue.pendingJobs;
+    this.onStatus({ status: 'transcribing', channel, pending: queue.pendingJobs, requestId });
 
-    const job = this.queueTail.then(async () => {
-      if (this.discardPendingJobs) return;
+    const job = queue.tail.then(async () => {
+      if (queue.abandoned || generation !== this.jobGeneration) return;
       const text = await this.session.transcribe(pcm);
-      if (text) this.onTranscript(channel, text);
+      if (!queue.abandoned && generation === this.jobGeneration && (requestId !== undefined || text)) {
+        this.onTranscript(channel, text, requestId);
+      }
     });
 
-    this.queueTail = job
+    queue.tail = job
       .catch((error) => {
-        if (!this.discardPendingJobs) this.onError(error);
+        if (!queue.abandoned && generation === this.jobGeneration) this.onError(error, channel, requestId);
       })
       .finally(() => {
-        this.pendingJobs -= 1;
-        if (this.acceptingAudio && this.pendingJobs === 0) {
+        queue.pendingJobs -= 1;
+        if (this.queueState === queue) this.pendingJobs = queue.pendingJobs;
+        if (this.acceptingAudio && this.queueState === queue && generation === this.jobGeneration && !queue.abandoned && queue.pendingJobs === 0) {
           this.onStatus({ status: 'ready', message: 'Local Whisper is ready.' });
         }
       });
+    if (this.queueState === queue) this.queueTail = queue.tail;
     return job;
   }
 
-  async _drainQueue() {
+  _createQueueState(generation) {
+    return { generation, tail: Promise.resolve(), pendingJobs: 0, abandoned: false };
+  }
+
+  async _drainQueue(queue = this.queueState) {
     let timeout = null;
     try {
       return await Promise.race([
-        this.queueTail.then(() => true),
+        queue.tail.then(() => true),
         new Promise((resolve) => {
           timeout = setTimeout(() => resolve(false), this.drainTimeoutMs);
         })

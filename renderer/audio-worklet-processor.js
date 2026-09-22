@@ -1,6 +1,6 @@
 // AudioWorklet processor — runs off the main thread for low-latency audio capture.
-// Replaces the deprecated ScriptProcessor. Receives Float32 audio, converts to Int16 PCM,
-// and sends to the main thread via MessagePort.
+// Replaces the deprecated ScriptProcessor. It sends measured-rate Float32 blocks
+// to the renderer, where one stateful converter performs resampling and PCM16 conversion.
 
 class CueAudioProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -25,13 +25,16 @@ class CueAudioProcessor extends AudioWorkletProcessor {
   }
 
   _flush() {
-    // Convert Float32 [-1,1] to Int16 PCM
-    const pcm = new Int16Array(this._writeIndex);
+    const samples = this._buffer.slice(0, this._writeIndex);
+    let sum = 0;
     for (let i = 0; i < this._writeIndex; i++) {
-      const s = Math.max(-1, Math.min(1, this._buffer[i]));
-      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      sum += samples[i] * samples[i];
     }
-    this.port.postMessage(pcm.buffer, [pcm.buffer]);
+    this.port.postMessage({
+      samples,
+      sampleRate,
+      level: samples.length ? Math.sqrt(sum / samples.length) : 0
+    }, [samples.buffer]);
     this._buffer = new Float32Array(this._bufferSize);
     this._writeIndex = 0;
   }

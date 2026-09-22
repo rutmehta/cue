@@ -1,10 +1,22 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { IPC_EVENTS, IPC_INVOKES, IPC_SENDS } = require('./src/ipc-contract');
 const platform = process.platform;
 
 contextBridge.exposeInMainWorld('cue', {
   platform,
+  sessionGetSnapshot: () => ipcRenderer.invoke(IPC_INVOKES.sessionGetSnapshot),
+  sessionCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.sessionCommand, command),
+  windowCommand: (command) => ipcRenderer.invoke(IPC_INVOKES.windowCommand, command),
+  fitAnswer: (payload) => ipcRenderer.send('overlay:fit-answer', payload),
+  settingsOpen: () => ipcRenderer.invoke(IPC_INVOKES.settingsOpen),
+  captureProtection: () => ipcRenderer.invoke(IPC_INVOKES.captureProtection),
+  newChat: () => ipcRenderer.invoke(IPC_INVOKES.newChat),
+  sourceUpdate: (source, patch) => ipcRenderer.send(IPC_SENDS.sourceUpdate, { source, patch }),
+  sourcePcm: (source, payload) => ipcRenderer.send(IPC_SENDS.sourcePcm, { source, payload }),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
+  codexStatus: () => ipcRenderer.invoke('codex:status'),
+  codexLogin: () => ipcRenderer.invoke('codex:login'),
   whisperModels: () => ipcRenderer.invoke('whisper:models'),
   whisperModelDownload: (modelId) => ipcRenderer.invoke('whisper:model-download', modelId),
   whisperModelCancel: (modelId) => ipcRenderer.invoke('whisper:model-cancel', modelId),
@@ -17,8 +29,6 @@ contextBridge.exposeInMainWorld('cue', {
     return false;
   }),
   captureState: () => ipcRenderer.invoke('capture:state'),
-  micPcm: (arrayBuffer) => ipcRenderer.send('mic:pcm', arrayBuffer),
-  systemPcm: (arrayBuffer) => ipcRenderer.send('system:pcm', arrayBuffer),
   setIgnoreMouse: (v) => ipcRenderer.send('mouse:ignore', v),
   clearTranscript: () => ipcRenderer.invoke('transcript:clear'),
   openPane: (url) => ipcRenderer.send('open-pane', url),
@@ -32,8 +42,10 @@ contextBridge.exposeInMainWorld('cue', {
   permissionsContinue: () => ipcRenderer.send('permissions:continue'),
   log: (msg) => ipcRenderer.send('log', msg),
   on: (channel, cb) => {
-    const allowed = ['capture:state', 'llm:start', 'llm:token', 'llm:done', 'llm:error', 'status', 'transcript', 'stt:interim', 'stt:final', 'stt:status', 'vad:state', 'applink:consent-request', 'hide:toggle', 'whisper:download-progress', 'whisper:models-changed'];
-    if (!allowed.includes(channel)) return;
-    ipcRenderer.on(channel, (_e, data) => cb(data));
+    const allowed = [IPC_EVENTS.sessionSnapshot, 'screen:context', 'overlay:layout', 'capture:state', 'llm:start', 'llm:token', 'llm:done', 'llm:error', 'status', 'transcript', 'transcript:cleared', 'stt:interim', 'stt:final', 'stt:status', 'vad:state', 'applink:consent-request', 'hide:toggle', 'settings:open', 'whisper:download-progress', 'whisper:models-changed'];
+    if (!allowed.includes(channel) || typeof cb !== 'function') return () => {};
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
   }
 });

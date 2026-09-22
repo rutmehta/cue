@@ -58,19 +58,24 @@ async function transcribeGemini(apiKey, wav) {
   return ((res && res.text) || '').trim();
 }
 
-function createSTT(settings) {
+function createSTT(settings, adapters) {
+  adapters = adapters || {};
+  const openAiAdapter = adapters.transcribeOpenAI || transcribeOpenAI;
+  const geminiAdapter = adapters.transcribeGemini || transcribeGemini;
   const keys = settings.apiKeys || {};
   const selectedProvider = settings.sttProvider || 'auto';
   const vocabPrompt = buildVocabPrompt(settings);
   const chain = [];
   if ((selectedProvider === 'auto' || selectedProvider === 'openai') && keys.openai) {
-    chain.push({ p: 'openai', fn: (wav) => transcribeOpenAI(keys.openai, wav, settings.sttModel, undefined, vocabPrompt) });
+    const model = settings.sttModel || 'whisper-1';
+    chain.push({ p: 'openai', model, fn: (wav) => openAiAdapter(keys.openai, wav, model, undefined, vocabPrompt) });
   }
   if ((selectedProvider === 'auto' || selectedProvider === 'groq') && keys.groq) {
-    chain.push({ p: 'groq', fn: (wav) => transcribeOpenAI(keys.groq, wav, 'whisper-large-v3-turbo', 'https://api.groq.com/openai/v1', vocabPrompt) });
+    const model = 'whisper-large-v3-turbo';
+    chain.push({ p: 'groq', model, fn: (wav) => openAiAdapter(keys.groq, wav, model, 'https://api.groq.com/openai/v1', vocabPrompt) });
   }
   if ((selectedProvider === 'auto' || selectedProvider === 'gemini') && keys.gemini) {
-    chain.push({ p: 'gemini', fn: (wav) => transcribeGemini(keys.gemini, wav) });
+    chain.push({ p: 'gemini', model: CURRENT_GEMINI_DEFAULT, fn: (wav) => geminiAdapter(keys.gemini, wav) });
   }
   if (keys.openai && chain.length > 1) chain.unshift(chain.splice(chain.findIndex((c) => c.p === 'openai'), 1)[0]);
 
@@ -91,15 +96,15 @@ function createSTT(settings) {
           const text = await c.fn(wav);
           disabledUntil = 0;
           lastProvider = c.p;
-          if (looksLikeHallucination(text)) return { text: '', provider: c.p };
-          return { text, provider: c.p };
+          if (looksLikeHallucination(text)) return { text: '', provider: c.p, model: c.model };
+          return { text, provider: c.p, model: c.model };
         } catch (e) {
           // Shares detection/wording with the LLM error path (src/llm.js) so a
           // 404 (dead/misspelled model) or 429 (quota) reads the same whether it
           // came from a chat request or a transcription request.
           const quota = isQuotaError(e);
           const message = formatProviderErrorMessage(e, c.p);
-          lastErr = { status: e && e.status, code: e && e.code, message, provider: c.p };
+          lastErr = { status: e && e.status, code: e && e.code, message, provider: c.p, model: c.model };
           if (quota) {
             lastProvider = c.p;
             disabledUntil = now + 30000;

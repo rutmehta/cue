@@ -1,0 +1,156 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const root = path.join(__dirname, '..');
+const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const preloadSource = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
+const rendererSource = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+const storeSource = fs.readFileSync(path.join(root, 'src', 'store.js'), 'utf8');
+const appLinkSource = fs.readFileSync(path.join(root, 'src', 'applink.js'), 'utf8');
+
+function occurrences(source, pattern) {
+  return (source.match(pattern) || []).length;
+}
+
+test('main has one lifecycle listener per exit boundary and an honest identity', () => {
+  assert.equal(occurrences(mainSource, /app\.on\('will-quit'/g), 1);
+  assert.equal(occurrences(mainSource, /app\.on\('window-all-closed'/g), 1);
+  assert.equal(occurrences(mainSource, /ipcMain\.on\('app:quit'/g), 1);
+  assert.match(mainSource, /app\.setName\('Cue'\)/);
+  assert.doesNotMatch(mainSource, /MicrosoftEdgeUpdate|Microsoft Edge Update/);
+});
+
+test('main constructs one authoritative controller, lifecycle coordinator, and tray controller', () => {
+  assert.equal(occurrences(mainSource, /new SessionController\(/g), 1);
+  assert.equal(occurrences(mainSource, /createLifecycleCoordinator\(/g), 1);
+  assert.equal(occurrences(mainSource, /createTrayController\(/g), 1);
+  assert.match(mainSource, /IPC_EVENTS\.sessionSnapshot/);
+  assert.match(mainSource, /IPC_INVOKES\.sessionGetSnapshot/);
+  assert.match(mainSource, /IPC_INVOKES\.sessionCommand/);
+  assert.match(mainSource, /IPC_INVOKES\.windowCommand/);
+  assert.doesNotMatch(mainSource, /trayEnabled: true/);
+  assert.match(mainSource, /getTraySnapshot/);
+});
+
+test('global recovery shortcut toggles the native overlay and prepares a visible macOS tray image', () => {
+  assert.match(mainSource, /DEFAULTS\.toggle/);
+  assert.match(mainSource, /lifecycleCoordinator\?\.command\('toggle'\)/);
+  assert.match(mainSource, /\.resize\(\{\s*width:\s*18,\s*height:\s*18\s*\}\)/);
+  assert.match(mainSource, /setTemplateImage\(true\)/);
+});
+
+test('global overlay controls move, clear context, and toggle listening without ending the session', () => {
+  assert.match(mainSource, /DEFAULTS\.moveLeft/);
+  assert.match(mainSource, /DEFAULTS\.moveRight/);
+  assert.match(mainSource, /DEFAULTS\.clear/);
+  assert.match(mainSource, /DEFAULTS\.listening/);
+  assert.match(mainSource, /function nudgeOverlay\(/);
+  assert.match(mainSource, /function toggleOverlay\(\)[^]*overlayVisibility\.toggleAction\(\)/);
+  assert.match(mainSource, /function nudgeOverlay\(deltaX\)[^]*if \(!overlayVisibility\.isVisible\(\)\) \{\s*showOverlay\(\);\s*return;\s*\}/);
+  assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
+  assert.match(mainSource, /phase === 'paused' \? 'resume'/);
+  assert.doesNotMatch(mainSource, /DEFAULTS\.listening[^]*command\('end-session'\)/);
+});
+
+test('overlay visibility stays synchronized across native, startup, and consent paths', () => {
+  // Electron 33 maps macOS occlusion to BrowserWindow show/hide events, so those
+  // events cannot be allowed to change the user's desired overlay state.
+  assert.doesNotMatch(mainSource, /createdWindow\.on\('(show|hide)'/);
+  assert.match(mainSource, /createdWindow\.on\('minimize',[^]*overlayVisibility\.markHidden\(\)/);
+  assert.match(mainSource, /createdWindow\.on\('restore',[^]*overlayVisibility\.markVisible\(\)/);
+  assert.match(mainSource, /did-finish-load[^]*if \(win !== createdWindow\) return;[^]*if \(overlayVisibility\.isVisible\(\)\) createdWindow\.showInactive\(\);[^]*publishSessionSnapshot\(\)/);
+  assert.match(mainSource, /function showOverlay\(\)[^]*isMinimized\(\)[^]*restore\(\)[^]*showInactive\(\)/);
+  assert.match(mainSource, /startAppLink\(\{[^]*showWindow: showOverlay/);
+  assert.match(appLinkSource, /deps\.showWindow\(\)/);
+  assert.doesNotMatch(appLinkSource, /\.isVisible\(\)/);
+});
+
+test('every Cue window applies content protection before loading renderer content', () => {
+  const overlayStart = mainSource.indexOf('function createWindow()');
+  const overlayEnd = mainSource.indexOf('// -------- STT flushing', overlayStart);
+  const overlaySource = mainSource.slice(overlayStart, overlayEnd);
+  assert.ok(overlaySource.indexOf('new BrowserWindow(') >= 0);
+  assert.ok(overlaySource.indexOf('protectWindow(') > overlaySource.indexOf('new BrowserWindow('));
+  assert.ok(overlaySource.indexOf('.loadFile(') > overlaySource.indexOf('protectWindow('));
+
+  const permissionStart = mainSource.indexOf('function createPermissionsWindow()');
+  const permissionEnd = mainSource.indexOf('// -------- launch', permissionStart);
+  const permissionSource = mainSource.slice(permissionStart, permissionEnd);
+  assert.ok(permissionSource.indexOf('new BrowserWindow(') >= 0);
+  assert.ok(permissionSource.indexOf('protectWindow(') > permissionSource.indexOf('new BrowserWindow('));
+  assert.ok(permissionSource.indexOf('.loadFile(') > permissionSource.indexOf('protectWindow('));
+});
+
+test('main restores and persists immutable per-display overlay bounds', () => {
+  assert.match(mainSource, /resolveOverlayBounds\(/);
+  assert.match(mainSource, /storeBoundsForDisplay\(/);
+  assert.match(mainSource, /storeOverlayBoundsState\(/);
+  assert.match(mainSource, /preferredDisplayId/);
+  assert.match(mainSource, /screen\.getDisplayMatching\(/);
+  assert.match(mainSource, /\.on\('moved'/);
+  assert.match(mainSource, /\.on\('resized'/);
+});
+
+test('preload exposes stable named session APIs and removable snapshot subscriptions', () => {
+  for (const name of ['sessionGetSnapshot', 'sessionCommand', 'windowCommand', 'settingsOpen', 'captureProtection', 'sourceUpdate', 'sourcePcm']) {
+    assert.match(preloadSource, new RegExp(`${name}:`));
+  }
+  assert.match(preloadSource, /IPC_EVENTS\.sessionSnapshot/);
+  assert.match(preloadSource, /return \(\) => ipcRenderer\.removeListener\(channel, listener\)/);
+});
+
+test('New Chat clears conversation context without ending the active session', () => {
+  assert.match(preloadSource, /newChat:\s*\(\)\s*=>\s*ipcRenderer\.invoke\(IPC_INVOKES\.newChat\)/);
+  assert.match(mainSource, /ipcMain\.handle\(IPC_INVOKES\.newChat,\s*\(\)\s*=>\s*\{\s*clearSessionContext\('new-chat'\)/s);
+});
+
+test('renderer source lifecycle and main STT/settings/clear paths update the controller', () => {
+  assert.match(mainSource, /IPC_SENDS\.sourceUpdate/);
+  assert.match(mainSource, /IPC_SENDS\.sourcePcm/);
+  assert.match(mainSource, /type: 'STT_UPDATED'/);
+  assert.match(mainSource, /type: 'SETTINGS_UPDATED'/);
+  assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
+  assert.match(rendererSource, /cue\.sourceUpdate\(/);
+  assert.match(mainSource, /isOverlaySender\(event, win\)/);
+  assert.match(mainSource, /parseSourceUpdatePayload\(payload\)/);
+  assert.match(mainSource, /batchStatusForResult\(res\)/);
+  assert.match(mainSource, /localSttRuntime\.stop\(\)/);
+  assert.match(mainSource, /localSttRuntime\.push\(channel, message\.payload\)/);
+  assert.match(mainSource, /batchAttemptGate\.beginCapture\(\)/);
+  assert.match(mainSource, /batchAttemptGate\.beginAttempt\(channel\)/);
+  assert.match(mainSource, /batchAttemptGate\.commit\(/);
+  assert.match(mainSource, /batchAttemptGate\.invalidate\(\)/);
+});
+
+test('main routes local audio through one fastest-local manager with no legacy Whisper path', () => {
+  assert.equal(occurrences(mainSource, /new LocalSttManager\(/g), 1);
+  assert.equal(occurrences(mainSource, /createLocalSttRuntime\(/g), 1);
+  assert.match(mainSource, /new ParakeetTranscriber\(/);
+  assert.match(mainSource, /new WhisperEngine\(/);
+  assert.doesNotMatch(mainSource, /localWhisperTranscriber/);
+  assert.doesNotMatch(mainSource, /ipcMain\.on\('mic:pcm'/);
+  assert.doesNotMatch(mainSource, /ipcMain\.on\('system:pcm'/);
+});
+
+test('fresh installs default to fastest healthy local speech recognition', () => {
+  assert.match(storeSource, /sttProvider:\s*'local'/);
+  assert.match(storeSource, /localStt:\s*\{\s*engine:\s*'auto'/);
+});
+
+test('renderer consumes one authoritative snapshot stream and explicit window commands', () => {
+  assert.equal(occurrences(rendererSource, /cue\.on\('session:snapshot'/g), 1);
+  assert.match(rendererSource, /cue\.sessionGetSnapshot\(\)/);
+  assert.match(rendererSource, /cue\.sessionCommand\('quit'\)/);
+  assert.match(rendererSource, /cue\.windowCommand\('hide'\)/);
+  assert.doesNotMatch(rendererSource, /cue\.setIgnoreMouse\(/);
+});
+
+test('legacy STT events cannot override snapshot-owned session controls', () => {
+  const statusStart = rendererSource.indexOf("cue.on('stt:status'");
+  const statusEnd = rendererSource.indexOf("cue.on('vad:state'", statusStart);
+  const statusHandler = rendererSource.slice(statusStart, statusEnd);
+
+  assert.doesNotMatch(statusHandler, /stop-btn/);
+});
