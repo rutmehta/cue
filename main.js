@@ -29,7 +29,8 @@ const { ParakeetTranscriber } = require('./src/parakeet-transcriber');
 const { CoreMLTranscriber } = require('./src/coreml-transcriber');
 const { inspectParakeet } = require('./src/parakeet-runtime');
 const { WhisperEngine } = require('./src/whisper-engine');
-const { DEFAULTS, replaceGlobalShortcut } = require('./src/shortcuts');
+const { gestureBounds } = require('./src/window-gesture');
+const { DEFAULTS, replaceGlobalShortcut, createVisibleShortcuts } = require('./src/shortcuts');
 const { createVisibilityLatch } = require('./src/visibility-latch');
 
 // Electron 44 / Chromium 152 can cancel speaker playback from other apps,
@@ -289,6 +290,7 @@ function createWindow() {
   // This latch is the desired overlay state. BrowserWindow.isVisible() can stay
   // true after hide() on macOS, so it must never decide a recovery shortcut.
   overlayVisibility.markVisible();
+  visibleShortcuts?.setVisible(true);
   const protectionStatus = protectWindow(createdWindow);
   createdWindow.setAlwaysOnTop(true, 'screen-saver', 1);
   createdWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -323,11 +325,13 @@ function createWindow() {
   createdWindow.on('minimize', () => {
     if (win !== createdWindow) return;
     overlayVisibility.markHidden();
+    visibleShortcuts?.setVisible(false);
     refreshTray();
   });
   createdWindow.on('restore', () => {
     if (win !== createdWindow) return;
     overlayVisibility.markVisible();
+    visibleShortcuts?.setVisible(true);
     refreshTray();
   });
   createdWindow.on('close', (event) => {
@@ -338,6 +342,7 @@ function createWindow() {
     } else {
       createdWindow.hide();
       if (win === createdWindow) overlayVisibility.markHidden();
+      visibleShortcuts?.setVisible(false);
       refreshTray();
     }
   });
@@ -346,6 +351,7 @@ function createWindow() {
     if (win === createdWindow) {
       win = null;
       overlayVisibility.markHidden();
+      visibleShortcuts?.setVisible(false);
     }
   });
 
@@ -933,6 +939,21 @@ ipcMain.on(IPC_SENDS.sourcePcm, (event, message) => {
   }
 });
 ipcMain.on('ask', (_e, payload) => runFeature(payload.mode, payload.text));
+let windowGesture = null;
+ipcMain.on('window:gesture', (event, payload = {}) => {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents || !payload || typeof payload !== 'object') return;
+  if (payload.phase === 'end') { windowGesture = null; return; }
+  if (!overlayVisibility.isVisible() || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return;
+  if (payload.phase === 'start') {
+    if (!['move', 'left', 'right'].includes(payload.kind)) return;
+    windowGesture = { kind: payload.kind, x: payload.x, y: payload.y, bounds: win.getBounds() };
+    store.setSettings({ overlay: { layoutMode: 'manual' } });
+    send('overlay:layout', { mode: 'manual' });
+  } else if (payload.phase === 'update' && windowGesture) {
+    win.setBounds(gestureBounds(windowGesture.bounds, windowGesture.kind,
+      Math.round(payload.x - windowGesture.x), Math.round(payload.y - windowGesture.y)));
+  }
+});
 ipcMain.on('mouse:ignore', (_e, v) => { if (win) win.setIgnoreMouseEvents(!!v, { forward: true }); });
 ipcMain.on('open-pane', (_e, url) => { shell.openExternal(url).catch(() => {}); });
 ipcMain.on('app:quit', () => { void requestQuit(); });
@@ -978,6 +999,7 @@ ipcMain.on('permissions:continue', async () => {
 
 // -------- shortcuts --------
 let registeredToggleShortcut = null;
+let visibleShortcuts = null;
 function handleToggleShortcut() {
   const toggled = lifecycleCoordinator?.command('toggle');
   if (toggled) void toggled.catch((error) => recordEvent({
@@ -985,26 +1007,29 @@ function handleToggleShortcut() {
   }));
 }
 function registerShortcuts() {
-  shortcutState.assist = globalShortcut.register(DEFAULTS.assist, () => runFeature('assist', ''));
-  shortcutState.say = globalShortcut.register(DEFAULTS.say, () => runFeature('say', ''));
-  shortcutState.leetcode = globalShortcut.register(DEFAULTS.leetcode, () => runFeature('leetcode', ''));
+  visibleShortcuts = createVisibleShortcuts(globalShortcut, {
+    assist: () => runFeature('assist', ''),
+    say: () => runFeature('say', ''),
+    leetcode: () => runFeature('leetcode', ''),
+    moveLeft: () => nudgeOverlay(-96),
+    moveRight: () => nudgeOverlay(96),
+    clear: clearSessionContext,
+    listening: () => {
+      const phase = sessionController?.getSnapshot().session.phase || 'idle';
+      const command = phase === 'paused' ? 'resume'
+        : (phase === 'listening' || phase === 'starting') ? 'pause' : 'start';
+      const changed = lifecycleCoordinator?.command(command);
+      if (changed) void changed.catch((error) => recordEvent({
+        level: 'warn', event: 'listening_shortcut_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
+      }));
+    },
+    quit: () => { void requestQuit(); }
+  });
+  Object.assign(shortcutState, visibleShortcuts.setVisible(overlayVisibility.isVisible()));
   try {
     registeredToggleShortcut = replaceGlobalShortcut(globalShortcut, null, store.getSettings().shortcuts?.toggle || DEFAULTS.toggle, handleToggleShortcut);
     shortcutState.toggle = true;
   } catch { shortcutState.toggle = false; }
-  shortcutState.moveLeft = globalShortcut.register(DEFAULTS.moveLeft, () => nudgeOverlay(-96));
-  shortcutState.moveRight = globalShortcut.register(DEFAULTS.moveRight, () => nudgeOverlay(96));
-  shortcutState.clear = globalShortcut.register(DEFAULTS.clear, clearSessionContext);
-  shortcutState.listening = globalShortcut.register(DEFAULTS.listening, () => {
-    const phase = sessionController?.getSnapshot().session.phase || 'idle';
-    const command = phase === 'paused' ? 'resume'
-      : (phase === 'listening' || phase === 'starting') ? 'pause' : 'start';
-    const changed = lifecycleCoordinator?.command(command);
-    if (changed) void changed.catch((error) => recordEvent({
-      level: 'warn', event: 'listening_shortcut_failed', msg: error?.message || String(error), frame: 'registerShortcuts'
-    }));
-  });
-  shortcutState.quit = globalShortcut.register(DEFAULTS.quit, () => { void requestQuit(); });
   for (const [name, wasRegistered] of Object.entries(shortcutState)) {
     if (!wasRegistered) {
       recordEvent({ level: 'warn', event: 'shortcut_unavailable', msg: 'another application holds the ' + name + ' shortcut', frame: 'registerShortcuts', context: { shortcut: name } });
@@ -1102,6 +1127,7 @@ function createPermissionsWindow() {
 
 function showOverlay() {
   overlayVisibility.markVisible();
+  visibleShortcuts?.setVisible(true);
   if (!win || win.isDestroyed()) createWindow();
   if (win && !win.isDestroyed()) {
     win.setIgnoreMouseEvents(false);
@@ -1113,8 +1139,10 @@ function showOverlay() {
 }
 
 function hideOverlay() {
+  windowGesture = null;
   if (win && !win.isDestroyed()) win.hide();
   overlayVisibility.markHidden();
+  visibleShortcuts?.setVisible(false);
   refreshTray();
 }
 
@@ -1125,10 +1153,7 @@ function toggleOverlay() {
 
 function nudgeOverlay(deltaX) {
   if (!win || win.isDestroyed()) return;
-  if (!overlayVisibility.isVisible()) {
-    showOverlay();
-    return;
-  }
+  if (!overlayVisibility.isVisible()) return;
   const bounds = win.getBounds();
   const targetCenter = { x: bounds.x + deltaX + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) };
   const display = screen.getDisplayNearestPoint(targetCenter);
@@ -1202,6 +1227,7 @@ function destroyWindowsAndTray() {
   win = null;
   permWin = null;
   overlayVisibility.markHidden();
+  visibleShortcuts?.setVisible(false);
   sessionController?.dispose();
 }
 

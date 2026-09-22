@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('cue', {
     return false;
   }),
   captureState: () => ipcRenderer.invoke('capture:state'),
+  windowGesture: (payload) => ipcRenderer.send('window:gesture', payload),
   setIgnoreMouse: (v) => ipcRenderer.send('mouse:ignore', v),
   clearTranscript: () => ipcRenderer.invoke('transcript:clear'),
   openPane: (url) => ipcRenderer.send('open-pane', url),

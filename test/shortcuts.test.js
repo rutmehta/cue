@@ -53,3 +53,21 @@ test('isValid accepts good accelerators and rejects junk', () => {
   assert.strictEqual(isValid('++'), false);
   assert.strictEqual(isValid(null), false);
 });
+
+test('hiding releases action shortcuts and stale callbacks cannot act until shown', () => {
+  const { createVisibleShortcuts } = require('../src/shortcuts');
+  const held = new Map([['CommandOrControl+.', () => {}]]);
+  const registry = { register: (key, callback) => { held.set(key, callback); return true; }, unregister: key => held.delete(key) };
+  let calls = 0;
+  const scope = createVisibleShortcuts(registry, { moveLeft: () => calls++, quit: () => calls++ });
+  scope.setVisible(true);
+  const stale = held.get(DEFAULTS.moveLeft);
+  stale();
+  scope.setVisible(false);
+  assert.deepStrictEqual([...held.keys()], [DEFAULTS.toggle]);
+  stale();
+  assert.strictEqual(calls, 1);
+  scope.setVisible(true);
+  held.get(DEFAULTS.moveLeft)();
+  assert.strictEqual(calls, 2);
+});

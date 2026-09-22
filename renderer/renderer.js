@@ -72,6 +72,29 @@
   $('#appearance-btn').addEventListener('click', () => setAppearance(document.body.dataset.appearance === 'dark' ? 'light' : 'dark'));
   let latestQuestion = '';
   const cloudStates = {};
+  for (const [selector, kind] of [['.drag-pill', 'move'], ['#resize-left', 'left'], ['#resize-right', 'right']]) {
+    const handle = $(selector);
+    let pointer = null;
+    const sendGesture = (phase, event) => cue.windowGesture({ phase, kind, x: event.screenX, y: event.screenY });
+    handle.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      pointer = event.pointerId;
+      handle.setPointerCapture(pointer);
+      sendGesture('start', event);
+    });
+    handle.addEventListener('pointermove', event => {
+      if (pointer === event.pointerId) sendGesture('update', event);
+    });
+    const finish = event => {
+      if (pointer !== event.pointerId) return;
+      sendGesture('end', event);
+      pointer = null;
+    };
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+    handle.addEventListener('lostpointercapture', finish);
+  }
   const compactButton = $('#compact-btn');
   function setCompact(compact) {
     document.body.classList.toggle('compact', compact);

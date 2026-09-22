@@ -42,13 +42,13 @@ test('global recovery shortcut toggles the native overlay and prepares a visible
 });
 
 test('global overlay controls move, clear context, and toggle listening without ending the session', () => {
-  assert.match(mainSource, /DEFAULTS\.moveLeft/);
-  assert.match(mainSource, /DEFAULTS\.moveRight/);
-  assert.match(mainSource, /DEFAULTS\.clear/);
-  assert.match(mainSource, /DEFAULTS\.listening/);
+  assert.match(mainSource, /moveLeft:.*nudgeOverlay/);
+  assert.match(mainSource, /moveRight:.*nudgeOverlay/);
+  assert.match(mainSource, /clear: clearSessionContext/);
+  assert.match(mainSource, /listening: \(\)/);
   assert.match(mainSource, /function nudgeOverlay\(/);
   assert.match(mainSource, /function toggleOverlay\(\)[^]*overlayVisibility\.toggleAction\(\)/);
-  assert.match(mainSource, /function nudgeOverlay\(deltaX\)[^]*if \(!overlayVisibility\.isVisible\(\)\) \{\s*showOverlay\(\);\s*return;\s*\}/);
+  assert.match(mainSource, /function nudgeOverlay\(deltaX\)[^]*if \(!overlayVisibility\.isVisible\(\)\) return;/);
   assert.match(mainSource, /type: 'TRANSCRIPT_CLEARED'/);
   assert.match(mainSource, /phase === 'paused' \? 'resume'/);
   assert.doesNotMatch(mainSource, /DEFAULTS\.listening[^]*command\('end-session'\)/);

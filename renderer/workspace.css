@@ -192,3 +192,11 @@ body[data-appearance="dark"] .ai-text pre code { font-size: 1em; }
 .opacity-control input { width: 105px; accent-color: var(--action); }
 #toolbar #screen-context-btn { font-size: 12px; }
 .window-options { width: 250px; max-height: min(380px, calc(100vh - 70px)); overflow-y: auto; }
+
+/* Explicit pointer handles avoid native hit-testing gaps in transparent windows. */
+#toolbar, #toolbar .drag-pill, #toolbar .drag-pill * { -webkit-app-region: no-drag; }
+#toolbar .drag-pill { cursor: grab; touch-action: none; }
+#toolbar .drag-pill:active { cursor: grabbing; }
+.resize-side { position: absolute; top: 12px; bottom: 12px; width: 8px; z-index: 100; pointer-events: auto; -webkit-app-region: no-drag; cursor: ew-resize; touch-action: none; }
+#resize-left { left: 0; }
+#resize-right { right: 0; }

@@ -57,4 +57,26 @@ function replaceGlobalShortcut(registry, current, next, handler) {
   return next;
 }
 
-module.exports = { DEFAULTS, resolveShortcuts, findConflicts, isValid, replaceGlobalShortcut };
+function createVisibleShortcuts(registry, handlers) {
+  let visible = false;
+  const held = new Set();
+  return { setVisible(next) {
+    visible = next;
+    if (!visible) {
+      for (const accelerator of held) registry.unregister(accelerator);
+      held.clear();
+      return {};
+    }
+    const status = {};
+    for (const [name, handler] of Object.entries(handlers)) {
+      const accelerator = DEFAULTS[name];
+      status[name] = held.has(accelerator) || registry.register(accelerator, () => {
+        if (visible) handler();
+      });
+      if (status[name]) held.add(accelerator);
+    }
+    return status;
+  } };
+}
+
+module.exports = { createVisibleShortcuts, DEFAULTS, resolveShortcuts, findConflicts, isValid, replaceGlobalShortcut };
