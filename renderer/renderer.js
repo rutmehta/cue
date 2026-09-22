@@ -1267,6 +1267,11 @@
   });
   cue.on('transcript', ({ channel, text }) => {
     if (!text || text.trim().length < 2 || /^[?!.,;:\-…]+$/.test(text.trim())) return;
+    if (window.CaptureLifecycle.canClearTranscriptionWarning(statusWarning, channel, text)) {
+      clearTimeout(statusTimer);
+      document.getElementById('cue-status')?.classList.remove('show');
+      statusWarning = null;
+    }
     appendTranscriptHistoryTurn(channel, text, false);
     const preview = getOrCreateInterimEl();
     preview.textContent = `${channel === 'them' ? 'Them' : 'You'}: ${text}`;
@@ -1277,7 +1282,9 @@
     }
   });
   let statusTimer = null;
-  function showStatus(message) {
+  let statusWarning = null;
+  function showStatus(message, warning = null) {
+    statusWarning = warning;
     let el = document.getElementById('cue-status');
     if (!el) {
       el = document.createElement('div');
@@ -1298,9 +1305,9 @@
     clearTimeout(statusTimer);
     statusTimer = setTimeout(() => el.classList.remove('show'), 11000);
   }
-  cue.on('status', ({ message }) => {
+  cue.on('status', ({ message, kind, channel }) => {
     cue.log('[status] ' + message);
-    showStatus(message);
+    showStatus(message, { kind, channel });
     if (sttState !== 'disconnected') {
       const lower = message.toLowerCase();
       if (lower.includes('error') || lower.includes(' off')) {

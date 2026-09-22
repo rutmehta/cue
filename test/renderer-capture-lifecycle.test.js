@@ -9,8 +9,23 @@ const {
   createCaptureLifecycle,
   createSessionCaptureReconciler,
   describeSystemCaptureError,
+  canClearTranscriptionWarning,
   disconnectAudioGraph
 } = require('../renderer/capture-lifecycle');
+
+test('successful speech clears only a matching transcription warning', () => {
+  assert.equal(canClearTranscriptionWarning({ kind: 'transcription', channel: 'you' }, 'you', 'Hello'), true);
+  assert.equal(canClearTranscriptionWarning({ kind: 'transcription', channel: 'them' }, 'you', 'Hello'), false);
+  assert.equal(canClearTranscriptionWarning({ kind: 'capture' }, 'you', 'Hello'), false);
+  assert.equal(canClearTranscriptionWarning({ kind: 'transcription' }, 'you', 'Hello'), true);
+  assert.equal(canClearTranscriptionWarning({ kind: 'transcription' }, 'you', '  '), false);
+});
+
+test('invalid display capture reports a permission recovery action instead of opaque constraints', () => {
+  const detail = describeSystemCaptureError(new TypeError('Invalid capture constraints'));
+  assert.equal(detail.code, 'screen_capture_unavailable');
+  assert.match(detail.message, /System Settings/);
+});
 
 function deferred() {
   let resolve;

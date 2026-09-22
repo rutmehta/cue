@@ -75,6 +75,9 @@
   }
 
   function describeSystemCaptureError(error, { userGesture = false } = {}) {
+    if (/invalid capture constraints/i.test(error?.message || '')) {
+      return { code: 'screen_capture_unavailable', message: 'Meeting audio could not start because screen capture is unavailable. In System Settings → Privacy & Security → Screen & System Audio Recording, turn Cue off and on, then restart Cue. Your microphone is separate.' };
+    }
     const name = error && error.name;
     if (!userGesture && (name === 'InvalidStateError' || name === 'NotAllowedError'
       || name === 'PermissionDeniedError' || name === 'SecurityError')) {
@@ -87,6 +90,10 @@
     const message = String(error?.message || error || 'Meeting audio capture failed.').trim().slice(0, 500)
       || 'Meeting audio capture failed.';
     return { code, message };
+  }
+
+  function canClearTranscriptionWarning(warning, channel, text) {
+    return !!(warning?.kind === 'transcription' && (!warning.channel || warning.channel === channel) && text?.trim());
   }
 
   function createSessionCaptureReconciler({
@@ -259,6 +266,7 @@
     createCaptureLifecycle,
     createSessionCaptureReconciler,
     describeSystemCaptureError,
+    canClearTranscriptionWarning,
     disconnectAudioGraph
   };
 });

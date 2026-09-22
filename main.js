@@ -572,7 +572,7 @@ async function setCapturing(active) {
           detail: error.message,
           patch: { activeEngine: null, model: null }
         });
-        send('status', { message: `Local transcription could not start: ${error.message} No audio was sent to a cloud provider.` });
+        send('status', { kind: 'transcription', message: `Local transcription could not start: ${error.message} No audio was sent to a cloud provider.` });
         send('capture:state', { active: false, streaming: false, mode: 'local' });
         return false;
       }
@@ -1296,9 +1296,13 @@ async function launchApp() {
     manager: localSttManager,
     publishTranscript,
     publishSpeechState: (channel, speaking, durationMs) => send('vad:state', { channel, speaking, durationMs }),
-    publishError: (error) => send('status', {
-      message: `Local transcription error: ${error.message}. Audio was not sent to a cloud fallback.`
-    })
+    publishError: (error, channel) => {
+      recordEvent({ level: 'warn', event: 'local_transcription_failed', code: error.code || 'transcription_failed', msg: error.message, context: { channel } });
+      send('status', {
+        kind: 'transcription', channel,
+        message: `${channel === 'them' ? 'Meeting' : 'Microphone'} transcription could not process an audio segment: ${error.message}. No audio was sent to the cloud.`
+      });
+    }
   });
 
   const allowMedia = (permission) => permission === 'media' || permission === 'microphone' || permission === 'audioCapture' || permission === 'display-capture' || permission === 'screen';
