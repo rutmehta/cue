@@ -9,6 +9,7 @@ const { createSTT } = require('./src/stt');
 const { parseDocumentFile } = require('./src/resume');
 const { createLLM } = require('./src/llm');
 const { MODES, buildFeatureRequest, createPromptPlan } = require('./src/prompts');
+const { createChatHistory } = require('./src/chat-history');
 const { rms16 } = require('./src/wav');
 const { createStreamingSTT } = require('./src/stt-streaming');
 const { AdaptiveVAD, AudioRingBuffer } = require('./src/vad');
@@ -95,6 +96,7 @@ let localSttManager = null;
 let localSttRuntime = null;
 let llmRequestSequence = 0;
 let chatEpoch = 0;
+const chatHistory = createChatHistory();
 let answerLayoutEpoch = 0;
 let answerLayoutSize = null;
 const batchAttemptGate = createBatchAttemptGate();
@@ -706,6 +708,7 @@ async function runFeature(mode, userText) {
     });
     const system = prompt.system;
     const built = prompt.text;
+    const historyRequest = chatHistory.begin(built);
     requestId = `request-${Date.now()}-${++llmRequestSequence}`;
     dispatchSession({
       type: 'LLM_REQUEST_STARTED',
@@ -728,10 +731,10 @@ async function runFeature(mode, userText) {
       rearm();
     });
     try {
-      await Promise.race([
+      const answer = await Promise.race([
         llm.stream({
           system,
-          turns: [{ role: 'user', text: built }],
+          turns: historyRequest.turns,
           imageDataUrl,
           onActivity: () => { if (!streamSettled) rearm(); },
           onToken: (t) => {
@@ -746,6 +749,7 @@ async function runFeature(mode, userText) {
         }),
         stalled
       ]);
+      if (requestChatEpoch === chatEpoch) chatHistory.complete(historyRequest, answer);
     } finally {
       streamSettled = true;
       clearTimeout(watchdog);
@@ -1164,6 +1168,7 @@ function nudgeOverlay(deltaX) {
 
 function clearSessionContext(reason = 'clear') {
   chatEpoch += 1;
+  chatHistory.clear();
   answerLayoutEpoch += 1;
   answerLayoutSize = null;
   transcript.splice(0, transcript.length);
